@@ -26,8 +26,8 @@ def feature_extraction(dates, data):
     """
     raw_df = pd.DataFrame([r.attrib for r in data])
     
-    raw_df["startDate"] = pd.to_datetime(raw_df["startDate"])
-    raw_df["endDate"] = pd.to_datetime(raw_df["endDate"])
+    raw_df["startDate"] = pd.to_datetime(raw_df["startDate"], format="%Y-%m-%d %H:%M:%S %z")
+    raw_df["endDate"] = pd.to_datetime(raw_df["endDate"], format="%Y-%m-%d %H:%M:%S %z")
     raw_df["duration"] = (raw_df["endDate"] - raw_df["startDate"]).dt.total_seconds() / 60.0
     
     rows = []
@@ -38,30 +38,33 @@ def feature_extraction(dates, data):
         deep = session_slice[session_slice["value"] == "HKCategoryValueSleepAnalysisAsleepDeep"]["duration"].sum()
         rem = session_slice[session_slice["value"] == "HKCategoryValueSleepAnalysisAsleepREM"]["duration"].sum()
         awake = session_slice[session_slice["value"] == "HKCategoryValueSleepAnalysisAwake"]["duration"].sum()
+        unspecified = session_slice[session_slice["value"] == "HKCategoryValueSleepAnalysisAsleepUnspecified"]["duration"].sum()
+        if unspecified > core + deep + rem:
+            print("Warning: unspecified sleep duration is greater than the sum of core, deep, and rem sleep. Skipping this session.\nDate: {}, Unspecified duration: {}, Core: {}, Deep: {}, REM: {}\n".format(session_slice["startDate"].min(), unspecified, core, deep, rem))
+            continue
         
         start_hour = session_slice["startDate"].min().hour + session_slice["startDate"].min().minute / 60.0
         # The start hour is in 24 hours. In this case, there's huge risk that sleeping starting at noon and sleeping at early night will be clustered together.
         # To mitigate this issue, we can use sine transformation to capture the cyclical nature of time.
         start_sin = np.sin(2 * np.pi * start_hour / 24)
         
-        rows.append([start_sin, core, deep, rem, awake, weekday_map[weekday]])
-    df = pd.DataFrame(rows, columns=["start_sin", "CORE", "DEEP", "REM", "AWAKE", "weekday"])
+        rows.append([start_sin, core, deep, rem, awake, unspecified, weekday_map[weekday]])
+    df = pd.DataFrame(rows, columns=["start_sin", "CORE", "DEEP", "REM", "AWAKE", "UNSPECIFIED", "weekday"])
     return df
 
-def train_kmeans(df, n_clusters=5):
+def train_kmeans(df, n_clusters=5, random_state=42):
     df = df.dropna().copy()
     df = df.replace([np.inf, -np.inf], np.nan).dropna()
     
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(df)
     
-    model = KMeans(n_clusters=n_clusters, random_state=42)
+    model = KMeans(n_clusters=n_clusters, random_state=random_state)
     df["cluster"] = model.fit_predict(X_scaled)
     return df, model, scaler
 
 df = feature_extraction(dates, sleep_data)
 
-# Provisional cluster number
 N_CLUSTERS = 3
 
 final_df, model, scaler = train_kmeans(df, n_clusters=N_CLUSTERS)
