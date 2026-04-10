@@ -59,6 +59,7 @@ Pygments==2.20.0
 pyparsing==3.3.2
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
+pytz==2026.1.post1
 PyYAML==6.0.3
 pyzmq==27.1.0
 qh3==1.7.1
@@ -79,6 +80,7 @@ typing_extensions==4.15.0
 tzdata==2026.1
 urllib3==2.6.3
 urllib3-future==2.19.904
+vobject==0.9.9
 wassima==2.0.6
 wcwidth==0.6.0
 websockets==16.0
