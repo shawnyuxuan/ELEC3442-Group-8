@@ -1,3 +1,4 @@
+import argparse
 import time, datetime
 from typing import Literal
 from sklearn.cluster import KMeans
@@ -5,6 +6,51 @@ from sklearn.preprocessing import StandardScaler
 import os, sys
 import pandas as pd
 import pickle
+
+
+DEFAULT_MODEL_CANDIDATES = [
+    "jayden_model.pkl",
+    "local_model.pkl",
+]
+DEFAULT_MOCK_SCHEDULE = [
+    {"start": "09:00", "end": "10:00", "task": "Team Meeting", "intensity": "medium", "movable": False},
+    {"start": "10:00", "end": "12:00", "task": "Deep Work Session", "intensity": "high", "movable": True},
+    {"start": "12:00", "end": "13:00", "task": "Lunch Break", "intensity": "low", "movable": False},
+    {"start": "13:00", "end": "15:00", "task": "Project A", "intensity": "high", "movable": True},
+    {"start": "15:00", "end": "16:00", "task": "Project B", "intensity": "medium", "movable": True},
+    {"start": "16:00", "end": "17:00", "task": "Wrap-up and Planning for Tomorrow", "intensity": "low", "movable": True},
+]
+CLUSTER_PROFILES = {
+    0: {
+        "label": "Deep Work Ready",
+        "summary": "user was well-rested with balanced sleep stages",
+        "recommended_work_style": "Prioritize deep work and cognitively demanding tasks early in the day.",
+        "likely_risks": [
+            "overcommitting to too many hard tasks",
+            "underusing a high-energy morning window",
+        ],
+    },
+    1: {
+        "label": "Brain Fog Risk",
+        "summary": "user slept late and for a shorter duration",
+        "recommended_work_style": "Start with administrative or light work, then move critical tasks to the afternoon.",
+        "likely_risks": [
+            "slower task switching in the morning",
+            "reduced focus on deep work before noon",
+            "higher mental fatigue during long meetings",
+        ],
+    },
+    2: {
+        "label": "Sleep Inertia Risk",
+        "summary": "user had a long recovery-style sleep and may still feel groggy after waking",
+        "recommended_work_style": "Use a slow start, add activation or light movement, and delay heavy deadlines until later.",
+        "likely_risks": [
+            "slow warm-up after waking",
+            "reduced sharpness in the early morning",
+            "low momentum at the start of the day",
+        ],
+    },
+}
 
 def is_raspberry_pi():
     try:
@@ -26,7 +72,58 @@ else:
         sys.exit(1)
 
 root_path = os.path.dirname(os.path.abspath(__file__))
-sense = SenseHat()
+
+
+class DummySenseHat:
+    def clear(self):
+        return
+
+    def get_temperature(self):
+        return 20.0
+
+    def get_humidity(self):
+        return 60.0
+
+    def get_pressure(self):
+        return 1013.25
+
+    def set_pixels(self, pixels):
+        self.last_pixels = pixels
+
+
+def create_sense():
+    try:
+        return SenseHat()
+    except FileNotFoundError as exc:
+        print(f"Sense HAT emulator GUI is unavailable ({exc}). Falling back to dummy sensor values.")
+        return DummySenseHat()
+    except Exception as exc:
+        print(f"Sense HAT initialization failed ({exc}). Falling back to dummy sensor values.")
+        return DummySenseHat()
+
+
+sense = create_sense()
+
+
+def resolve_model_path(model_path: str | None = None) -> str:
+    if model_path:
+        return model_path
+
+    output_dir = os.path.join(root_path, "..", "output")
+    for candidate in DEFAULT_MODEL_CANDIDATES:
+        resolved = os.path.join(output_dir, candidate)
+        if os.path.exists(resolved):
+            return resolved
+
+    return os.path.join(output_dir, "local_model.pkl")
+
+
+def get_cluster_profile(cluster: int) -> dict[str, object] | None:
+    return CLUSTER_PROFILES.get(cluster)
+
+
+def get_mock_schedule() -> list[dict[str, object]]:
+    return [item.copy() for item in DEFAULT_MOCK_SCHEDULE]
 
 class Sensor:
     def __init__(self):
@@ -66,17 +163,24 @@ class LEDMatrix:
         self.sense.set_pixels(pixels)
 
 class SenseHatController:
-    def __init__(self):
+    def __init__(self, model_path: str | None = None):
+        self.sense = sense
         self.sensor = Sensor()
         self.led_matrix = LEDMatrix()
+        self.model_path = resolve_model_path(model_path)
         self.model, self.scaler = self.load_model()
     
     def load_model(self) -> tuple[KMeans, StandardScaler]:
         try:
-            model, scaler = pickle.load(open(f"{root_path}/../output/local_model.pkl", "rb"))
+            with open(self.model_path, "rb") as handle:
+                model, scaler = pickle.load(handle)
         except FileNotFoundError:
-            print("Model not found. Please run routine-learning.py to train the model first.")
+            print(
+                f"Model not found: {self.model_path}. "
+                "Please run routine-learning.py to train the model first."
+            )
             exit(1)
+        print(f"Loaded model: {self.model_path}")
         return model, scaler
 
     def fetch_sleep_data(self) -> pd.DataFrame:
@@ -104,24 +208,21 @@ class SenseHatController:
         if cluster not in [0, 1, 2]:
             print(f"Warning: cluster {cluster} is out of expected range.)")
             return ""
-        
-        quality_map = {
-            0: "user was well-rested with balanced sleep stages. Suggest a \"Deep Work\" focused schedule.",
-            1: "user slept late and for a shorter duration. Potential for \"brain fog.\" Suggest \"Administrative/Light\" tasks in the morning and moving critical tasks to the afternoon.",
-            2: "user had a massive sleep debt recovery. While duration was long, the user might experience \"Sleep Inertia\" (grogginess). Suggest a slow start with caffeine/physical activity and avoiding heavy deadlines until later in the day."
-        }
+
+        cluster_profile = get_cluster_profile(cluster)
+        assert cluster_profile is not None
         
         self.sense.clear()
         temperature = self.sensor.get_temperature()
         humidity = self.sensor.get_humidity()
         pressure = self.sensor.get_pressure()
         
-        #TODO: Replace this with actual schedule fetching logic, e.g., from Apple Calendar API.
-        # Mock schedule
-        schedule = "9:00 AM - 10:00 AM: Team Meeting\n10:00 AM - 12:00 PM: Deep Work Session\n12:00 PM - 1:00 PM: Lunch Break\n1:00 PM - 3:00 PM: Project A\n3:00 PM - 4:00 PM: Project B\n4:00 PM - 5:00 PM: Wrap-up and Planning for Tomorrow"
+        schedule = "\n".join(
+            f"{item['start']} - {item['end']}: {item['task']}" for item in get_mock_schedule()
+        )
         
         #TODO: Provisional. Refined prompt engineering needed.
-        prompt = f"""Last night, the {quality_map[cluster]}.
+        prompt = f"""Last night, the {cluster_profile['summary']}. {cluster_profile['recommended_work_style']}
         Current environmental conditions are: Temperature: {temperature:.1f}°C, Humidity: {humidity:.1f}%, Pressure: {pressure:.1f} hPa.
         The original schedule today includes: {schedule}.
         Please suggest an optimized schedule for today based on the sleep quality and current environmental conditions."""
@@ -173,3 +274,29 @@ class SenseHatController:
                 pixels = [W] * 64
         self.led_matrix.display_message(pixels)
         return
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Sense HAT sleep-quality predictor.")
+    parser.add_argument(
+        "--model",
+        help="Path to the trained model pickle. Defaults to output/jayden_model.pkl if present.",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    controller = SenseHatController(model_path=args.model)
+    sleep_data = controller.fetch_sleep_data()
+    cluster = controller.predict_sleep_quality(sleep_data)
+    prompt = controller.generate_prompt(cluster)
+
+    print(f"Predicted cluster: {cluster}")
+    print(prompt)
+    controller.led_display(cluster)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
