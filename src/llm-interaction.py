@@ -19,7 +19,7 @@ SYSTEM_TEMPLATE_PATH = PROMPTS_DIR / "system_instruction.txt"
 USER_TEMPLATE_PATH = PROMPTS_DIR / "user_prompt_template.txt"
 SLEEP_MODEL_PATH = os.getenv("SLEEP_MODEL_PATH")
 PRINT_STRUCTURED_INPUT = True
-INVOKE_LLM = False
+INVOKE_LLM = True
 
 
 # These data classes define the shared structure passed into the prompt layer.
