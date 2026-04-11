@@ -228,7 +228,6 @@ def call_qwen_chat(model: str, system_instruction: str, user_prompt: str) -> str
         )
 
     base_url = os.getenv("QWEN_BASE_URL", DEFAULT_QWEN_BASE_URL).rstrip("/")
-    endpoint = f"{base_url}/chat/completions"
     client = OpenAI(
         api_key=api_key,
         base_url=base_url,
@@ -238,7 +237,7 @@ def call_qwen_chat(model: str, system_instruction: str, user_prompt: str) -> str
     retry_delay_seconds = 2
     last_error: Exception | None = None
 
-    print(f"Qwen endpoint: {endpoint}")
+    print(f"Qwen base URL: {base_url}")
     print(f"Qwen model: {model}")
 
     # Retry a few times because the DashScope-compatible endpoint has been intermittently closing connections.
@@ -280,7 +279,7 @@ def call_qwen_chat(model: str, system_instruction: str, user_prompt: str) -> str
         except APIStatusError as exc:
             body_preview = str(exc.body)[:500] if getattr(exc, "body", None) else "<empty>"
             message = (
-                f"Qwen returned HTTP {exc.status_code} from {endpoint} "
+                f"Qwen returned HTTP {exc.status_code} from base URL {base_url} "
                 f"for model '{model}'. Response body: {body_preview or '<empty>'}"
             )
             if exc.status_code < 500 or attempt == max_attempts:
@@ -306,7 +305,7 @@ def call_qwen_chat(model: str, system_instruction: str, user_prompt: str) -> str
         raise RuntimeError(f"Qwen returned an empty streamed response for model '{model}'.")
 
     raise RuntimeError(
-        f"Qwen request failed after {max_attempts} attempts to {endpoint} for model '{model}': {last_error}"
+        f"Qwen request failed after {max_attempts} attempts to base URL {base_url} for model '{model}': {last_error}"
     ) from last_error
 
 
