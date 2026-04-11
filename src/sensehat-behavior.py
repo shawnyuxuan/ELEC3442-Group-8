@@ -201,7 +201,7 @@ class SenseHatController:
 
     def generate_prompt(self, cluster: Literal[0, 1, 2]):
         if cluster not in [0, 1, 2]:
-            print(f"Warning: cluster {cluster} is out of expected range.)")
+            print(f"Warning: cluster {cluster} is out of expected range.")
             return ""
 
         cluster_profile = get_cluster_profile(cluster)
