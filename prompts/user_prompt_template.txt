@@ -1,0 +1,26 @@
+User: {user_name}
+Target provider: {provider}
+Target model: {model}
+
+Sleep assessment:
+- Cluster ID: {cluster_id}
+- Cluster label: {cluster_label}
+- Summary: {summary}
+- Likely risks: {likely_risks}
+- Recommended work style: {recommended_work_style}
+
+Environment:
+- Temperature: {temperature_c:.1f} C
+- Humidity: {humidity_percent:.1f}%
+- Pressure: {pressure_hpa:.1f} hPa
+
+Original schedule:
+{schedule_lines}
+
+Constraints:
+- Preserve fixed events: {preserve_fixed_events}
+- Avoid medical claims: {avoid_medical_claims}
+- Maximum meaningful changes: {max_schedule_changes}
+- Output language: {preferred_output_language}
+
+Please optimize the schedule for today.

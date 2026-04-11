@@ -40,6 +40,7 @@ matplotlib-inline==0.2.1
 nest-asyncio==1.6.0
 niquests==3.18.4
 numpy==2.4.4
+openai
 packaging==26.0
 pandas==3.0.2
 parso==0.8.6
