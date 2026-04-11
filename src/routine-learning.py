@@ -20,8 +20,10 @@ RANDOM_STATE = 42
 
 
 def load_inputs(data_path: str, dates_path: str) -> tuple[list[ET.Element], list[list[object]]]:
-    assert os.path.exists(data_path), f"File does not exist: {data_path}"
-    assert os.path.exists(dates_path), f"File does not exist: {dates_path}"
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"File does not exist: {data_path}")
+    if not os.path.exists(dates_path):
+        raise FileNotFoundError(f"File does not exist: {dates_path}")
 
     root = ET.parse(data_path).getroot()
     with open(dates_path, "r", encoding="utf-8") as handle:
