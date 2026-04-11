@@ -1,24 +1,29 @@
-import argparse
 import importlib.util
 import json
 import os
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
-import requests
+from openai import APIConnectionError, APIStatusError, OpenAI, OpenAIError
 
 
 load_dotenv()
 
-DEFAULT_PROVIDER = "qwen"
-DEFAULT_MODEL = "qwen3.6-plus"
+DEFAULT_PROVIDER = os.getenv("LLM_PROVIDER", "qwen")
+DEFAULT_MODEL = os.getenv("LLM_MODEL", "qwen3.6-plus")
 DEFAULT_QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
-DEFAULT_SYSTEM_TEMPLATE_PATH = PROMPTS_DIR / "system_instruction.txt"
-DEFAULT_USER_TEMPLATE_PATH = PROMPTS_DIR / "user_prompt_template.txt"
+SYSTEM_TEMPLATE_PATH = PROMPTS_DIR / "system_instruction.txt"
+USER_TEMPLATE_PATH = PROMPTS_DIR / "user_prompt_template.txt"
+SLEEP_MODEL_PATH = os.getenv("SLEEP_MODEL_PATH")
+PRINT_STRUCTURED_INPUT = True
+INVOKE_LLM = True
 
 
+# These data classes define the shared structure passed into the prompt layer.
+# The goal is to keep the LLM input explicit instead of passing around loose dicts.
 @dataclass
 class EnvironmentContext:
     temperature_c: float
@@ -61,48 +66,6 @@ class LLMInput:
     environment: EnvironmentContext
     schedule: list[ScheduleItem]
     constraints: UserConstraints
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Prepare structured mock input and prompt for schedule optimization."
-    )
-    parser.add_argument(
-        "--provider",
-        default=os.getenv("LLM_PROVIDER", DEFAULT_PROVIDER),
-        help=f"LLM provider label. Default: {DEFAULT_PROVIDER}",
-    )
-    parser.add_argument(
-        "--model",
-        default=os.getenv("LLM_MODEL", DEFAULT_MODEL),
-        help=f"Model name label. Default: {DEFAULT_MODEL}",
-    )
-    parser.add_argument(
-        "--sleep-model-path",
-        default=os.getenv("SLEEP_MODEL_PATH"),
-        help="Path to the local sleep clustering model used by sensehat-behavior.py.",
-    )
-    parser.add_argument(
-        "--system-template",
-        default=str(DEFAULT_SYSTEM_TEMPLATE_PATH),
-        help="Path to the system instruction template text file.",
-    )
-    parser.add_argument(
-        "--user-template",
-        default=str(DEFAULT_USER_TEMPLATE_PATH),
-        help="Path to the user prompt template text file.",
-    )
-    parser.add_argument(
-        "--print-json",
-        action="store_true",
-        help="Print the structured mock input as JSON before the rendered prompt.",
-    )
-    parser.add_argument(
-        "--invoke",
-        action="store_true",
-        help="Actually call the configured LLM API instead of only printing the prepared prompt.",
-    )
-    return parser.parse_args()
 
 
 def build_static_mock_input(provider: str, model: str) -> LLMInput:
@@ -149,6 +112,8 @@ def build_static_mock_input(provider: str, model: str) -> LLMInput:
 
 
 def load_sensehat_module():
+    # sensehat-behavior.py owns the mock sleep input, model prediction, and cluster meaning.
+    # Load it dynamically so the LLM layer can reuse that logic without duplicating it.
     module_path = Path(__file__).with_name("sensehat-behavior.py")
     spec = importlib.util.spec_from_file_location("sensehat_behavior", module_path)
     if spec is None or spec.loader is None:
@@ -205,16 +170,17 @@ def build_input_from_sensehat_mock(provider: str, model: str, sleep_model_path: 
     )
 
 
-def load_template(template_path: str) -> str:
+def load_template(template_path: Path) -> str:
     with open(template_path, "r", encoding="utf-8") as handle:
         return handle.read().strip()
 
 
-def build_system_instruction(template_path: str) -> str:
+def build_system_instruction(template_path: Path) -> str:
     return load_template(template_path)
 
 
-def build_user_prompt(llm_input: LLMInput, template_path: str) -> str:
+def build_user_prompt(llm_input: LLMInput, template_path: Path) -> str:
+    # The text template stays outside Python so prompt editing does not require code changes.
     schedule_lines = []
     for item in llm_input.schedule:
         movable = "movable" if item.movable else "fixed"
@@ -263,44 +229,102 @@ def call_qwen_chat(model: str, system_instruction: str, user_prompt: str) -> str
 
     base_url = os.getenv("QWEN_BASE_URL", DEFAULT_QWEN_BASE_URL).rstrip("/")
     endpoint = f"{base_url}/chat/completions"
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_instruction},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.7,
-    }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    client = OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+    )
 
-    response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
-    response.raise_for_status()
-    body = response.json()
+    max_attempts = 3
+    retry_delay_seconds = 2
+    last_error: Exception | None = None
 
-    try:
-        return body["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"Unexpected Qwen response format: {body}") from exc
+    print(f"Qwen endpoint: {endpoint}")
+    print(f"Qwen model: {model}")
+
+    # Retry a few times because the DashScope-compatible endpoint has been intermittently closing connections.
+    for attempt in range(1, max_attempts + 1):
+        try:
+            completion = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": user_prompt},
+                ],
+                extra_body={"enable_thinking": True},
+                stream=True,
+            )
+        except (APIConnectionError, OpenAIError) as exc:
+            last_error = exc
+            print(f"Qwen request attempt {attempt}/{max_attempts} failed: {exc}")
+            if attempt < max_attempts:
+                time.sleep(retry_delay_seconds)
+                continue
+            break
+
+        answer_parts: list[str] = []
+        reasoning_parts: list[str] = []
+
+        try:
+            for chunk in completion:
+                if not chunk.choices:
+                    continue
+
+                delta = chunk.choices[0].delta
+                reasoning_content = getattr(delta, "reasoning_content", None)
+                content = getattr(delta, "content", None)
+
+                if reasoning_content:
+                    reasoning_parts.append(reasoning_content)
+                if content:
+                    answer_parts.append(content)
+        except APIStatusError as exc:
+            body_preview = str(exc.body)[:500] if getattr(exc, "body", None) else "<empty>"
+            message = (
+                f"Qwen returned HTTP {exc.status_code} from {endpoint} "
+                f"for model '{model}'. Response body: {body_preview or '<empty>'}"
+            )
+            if exc.status_code < 500 or attempt == max_attempts:
+                raise RuntimeError(message)
+
+            print(f"{message}. Retrying...")
+            time.sleep(retry_delay_seconds)
+            continue
+        except OpenAIError as exc:
+            last_error = exc
+            print(f"Qwen stream attempt {attempt}/{max_attempts} failed: {exc}")
+            if attempt < max_attempts:
+                time.sleep(retry_delay_seconds)
+                continue
+            break
+
+        if answer_parts:
+            return "".join(answer_parts).strip()
+
+        if reasoning_parts:
+            return "".join(reasoning_parts).strip()
+
+        raise RuntimeError(f"Qwen returned an empty streamed response for model '{model}'.")
+
+    raise RuntimeError(
+        f"Qwen request failed after {max_attempts} attempts to {endpoint} for model '{model}': {last_error}"
+    ) from last_error
 
 
 def main() -> int:
-    args = parse_args()
     try:
         llm_input = build_input_from_sensehat_mock(
-            provider=args.provider,
-            model=args.model,
-            sleep_model_path=args.sleep_model_path,
+            provider=DEFAULT_PROVIDER,
+            model=DEFAULT_MODEL,
+            sleep_model_path=SLEEP_MODEL_PATH,
         )
     except Exception as exc:
         print(f"Warning: failed to build input from sensehat mock pipeline ({exc}). Falling back to static mock input.")
-        llm_input = build_static_mock_input(provider=args.provider, model=args.model)
-    system_instruction = build_system_instruction(args.system_template)
-    user_prompt = build_user_prompt(llm_input, args.user_template)
+        llm_input = build_static_mock_input(provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL)
 
-    if args.print_json:
+    system_instruction = build_system_instruction(SYSTEM_TEMPLATE_PATH)
+    user_prompt = build_user_prompt(llm_input, USER_TEMPLATE_PATH)
+
+    if PRINT_STRUCTURED_INPUT:
         print("Structured mock input:")
         print(json.dumps(asdict(llm_input), indent=2, ensure_ascii=False))
         print()
@@ -312,15 +336,19 @@ def main() -> int:
     print(user_prompt)
     print()
 
-    if not args.invoke:
-        print("LLM API calling is disabled. Use --invoke to send this mock input to the configured provider.")
+    if not INVOKE_LLM:
+        print("LLM API calling is disabled. Set INVOKE_LLM = True to send the current mock input.")
         return 0
 
-    if args.provider.lower() != "qwen":
-        raise RuntimeError(f"Provider '{args.provider}' is not implemented yet.")
+    if DEFAULT_PROVIDER.lower() != "qwen":
+        raise RuntimeError(f"Provider '{DEFAULT_PROVIDER}' is not implemented yet.")
 
     print("LLM response:")
-    print(call_qwen_chat(model=args.model, system_instruction=system_instruction, user_prompt=user_prompt))
+    try:
+        print(call_qwen_chat(model=DEFAULT_MODEL, system_instruction=system_instruction, user_prompt=user_prompt))
+    except RuntimeError as exc:
+        print(f"Qwen request failed: {exc}")
+        return 1
     return 0
 
 

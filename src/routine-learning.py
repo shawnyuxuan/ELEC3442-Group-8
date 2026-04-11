@@ -1,4 +1,3 @@
-import argparse
 import json
 import os
 import pickle
@@ -12,38 +11,12 @@ from sklearn.preprocessing import StandardScaler
 
 WEEKDAY_MAP = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
 
-
-def parse_args() -> argparse.Namespace:
-    root_dir = os.path.dirname(os.path.abspath(__file__))
-    parser = argparse.ArgumentParser(description="Train a KMeans sleep routine model.")
-    parser.add_argument(
-        "--data",
-        default=f"{root_dir}/../data.xml",
-        help="Path to the filtered sleep XML file.",
-    )
-    parser.add_argument(
-        "--dates",
-        default=f"{root_dir}/../dates.json",
-        help="Path to the sleep session index JSON file.",
-    )
-    parser.add_argument(
-        "--output",
-        default=f"{root_dir}/../output/local_model.pkl",
-        help="Path to save the trained model and scaler pickle.",
-    )
-    parser.add_argument(
-        "--clusters",
-        type=int,
-        default=3,
-        help="Number of KMeans clusters. Default: 3",
-    )
-    parser.add_argument(
-        "--random-state",
-        type=int,
-        default=42,
-        help="Random seed for KMeans. Default: 42",
-    )
-    return parser.parse_args()
+root_dir = os.path.dirname(os.path.abspath(__file__))
+data_path = f"{root_dir}/../data.xml"
+dates_path = f"{root_dir}/../dates.json"
+output_path = f"{root_dir}/../output/local_model.pkl"
+N_CLUSTERS = 3
+RANDOM_STATE = 42
 
 
 def load_inputs(data_path: str, dates_path: str) -> tuple[list[ET.Element], list[list[object]]]:
@@ -61,7 +34,8 @@ def load_inputs(data_path: str, dates_path: str) -> tuple[list[ET.Element], list
 
 def feature_extraction(dates: list[list[object]], data: list[ET.Element]) -> pd.DataFrame:
     """
-    Extract stage durations, start time, and weekday features for each sleep session.
+    Convert each sleep session into one training row.
+    Each row contains start time, sleep-stage durations, and weekday.
     """
     raw_df = pd.DataFrame([record.attrib for record in data])
 
@@ -81,6 +55,8 @@ def feature_extraction(dates: list[list[object]], data: list[ET.Element]) -> pd.
             session_slice["value"] == "HKCategoryValueSleepAnalysisAsleepUnspecified"
         ]["duration"].sum()
 
+        # Early Apple sleep records often contain only "AsleepUnspecified".
+        # Those sessions do not carry enough stage information for clustering.
         if unspecified > core + deep + rem:
             skipped_sessions.append(
                 {
@@ -126,10 +102,10 @@ def train_kmeans(
     df = df.replace([np.inf, -np.inf], np.nan).dropna()
 
     scaler = StandardScaler()
-    x_scaled = scaler.fit_transform(df)
+    X_scaled = scaler.fit_transform(df)
 
     model = KMeans(n_clusters=n_clusters, random_state=random_state)
-    df["cluster"] = model.fit_predict(x_scaled)
+    df["cluster"] = model.fit_predict(X_scaled)
     return df, model, scaler
 
 
@@ -140,16 +116,15 @@ def save_model(model: KMeans, scaler: StandardScaler, output_path: str) -> None:
 
 
 def main() -> int:
-    args = parse_args()
-    sleep_data, dates = load_inputs(args.data, args.dates)
+    sleep_data, dates = load_inputs(data_path, dates_path)
     df = feature_extraction(dates, sleep_data)
     final_df, model, scaler = train_kmeans(
-        df, n_clusters=args.clusters, random_state=args.random_state
+        df, n_clusters=N_CLUSTERS, random_state=RANDOM_STATE
     )
 
     print(final_df.groupby("cluster").mean())
-    save_model(model, scaler, args.output)
-    print(f"Saved model to: {args.output}")
+    save_model(model, scaler, output_path)
+    print(f"Saved model to: {output_path}")
     return 0
 
 
