@@ -3,6 +3,8 @@
 .ipynb_checkpoints/
 .idea/
 .venv/
+__pycache__/
+*.pyc
 
 export.xml
 .env
