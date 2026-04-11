@@ -64,31 +64,22 @@ Prepare Jayden-specific processed sleep data:
 .venv/bin/python src/data-preprocessing.py
 ```
 
-Train the Jayden-specific local model:
+Train the local model (uses `data.xml` and `dates.json` by default; edit the `data_path`, `dates_path`, and `output_path` constants at the top of `src/routine-learning.py` to point to a different dataset):
 
 ```bash
-.venv/bin/python src/routine-learning.py \
-  --data data_jayden.xml \
-  --dates dates_jayden.json \
-  --output output/jayden_model.pkl
+.venv/bin/python src/routine-learning.py
 ```
 
-Run the local mock prediction path:
+Run the local mock prediction path (auto-discovers the model from the `output/` directory):
 
 ```bash
-.venv/bin/python src/sensehat-behavior.py --model output/jayden_model.pkl
+.venv/bin/python src/sensehat-behavior.py
 ```
 
-Inspect the LLM prompt without calling the API:
+Inspect the LLM prompt and invoke Qwen (set `INVOKE_LLM = False` at the top of the script to skip the API call and only print the rendered prompt):
 
 ```bash
-.venv/bin/python src/llm-interaction.py --print-json
-```
-
-Invoke Qwen with the current mock pipeline:
-
-```bash
-.venv/bin/python src/llm-interaction.py --invoke
+.venv/bin/python src/llm-interaction.py
 ```
 
 ## Environment Variables
