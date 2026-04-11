@@ -205,7 +205,8 @@ class SenseHatController:
             return ""
 
         cluster_profile = get_cluster_profile(cluster)
-        assert cluster_profile is not None
+        if cluster_profile is None:
+            raise ValueError(f"No cluster profile found for cluster {cluster}")
         
         if self.sense is not None:
             self.sense.clear()
