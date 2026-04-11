@@ -24,7 +24,8 @@ def load_inputs(data_path: str, dates_path: str) -> tuple[list[ET.Element], list
     assert os.path.exists(dates_path), f"File does not exist: {dates_path}"
 
     root = ET.parse(data_path).getroot()
-    dates = json.load(open(dates_path, "r", encoding="utf-8"))
+    with open(dates_path, "r", encoding="utf-8") as handle:
+        dates = json.load(handle)
     sleep_data = [record for record in root.findall("Record")]
 
     print(f"Total number of records: {len(sleep_data)}")
