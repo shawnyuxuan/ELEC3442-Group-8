@@ -242,6 +242,7 @@ class SenseHatController:
                     G, W, W, W, W, W, W, G,
                     W, G, G, W, W, G, G, W,
                     W, W, G, G, G, G, W, W,
+                    W, W, W, W, W, W, W, W,
                 ]
             case 1:
                 # A frown :(
@@ -253,6 +254,7 @@ class SenseHatController:
                     W, W, Y, Y, Y, Y, W, W,
                     W, Y, Y, W, W, Y, Y, W,
                     Y, W, W, W, W, W, W, Y,
+                    W, W, W, W, W, W, W, W,
                 ]
             case 2:
                 # A neutral face :|
@@ -264,6 +266,7 @@ class SenseHatController:
                     W, W, W, W, W, W, W, W,
                     W, R, R, R, R, R, R, W,
                     W, R, R, R, R, R, R, W,
+                    W, W, W, W, W, W, W, W,
                 ]
             case _:
                 pixels = [W] * 64

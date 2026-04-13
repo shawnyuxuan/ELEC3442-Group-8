@@ -350,6 +350,12 @@ def main() -> int:
         return 1
     return 0
 
+def mock_pipeline():
+    # Mock pipeline for exporting to calendar-agent without running the full LLM interaction.
+    llm_input = build_static_mock_input(provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL)
+    system_instruction = build_system_instruction(SYSTEM_TEMPLATE_PATH)
+    user_prompt = build_user_prompt(llm_input, USER_TEMPLATE_PATH)
+    return system_instruction, user_prompt
 
 if __name__ == "__main__":
     raise SystemExit(main())
