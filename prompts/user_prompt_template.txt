@@ -1,6 +1,7 @@
 User: {user_name}
 Target provider: {provider}
 Target model: {model}
+Schedule date: {schedule_date}
 
 Sleep assessment:
 - Cluster ID: {cluster_id}
@@ -22,5 +23,16 @@ Constraints:
 - Avoid medical claims: {avoid_medical_claims}
 - Maximum meaningful changes: {max_schedule_changes}
 - Output language: {preferred_output_language}
+- Do not extend beyond the original latest end time.
+- Do not overlap events.
+- Keep every original event exactly once in the final schedule.
 
-Please optimize the schedule for today.
+Return one JSON object only. The JSON must contain:
+- date
+- daily_summary
+- adjustment_principles
+- calendar_operations
+- optimized_schedule
+
+Use calendar_operations only for changed events.
+Use optimized_schedule for the full final schedule.
