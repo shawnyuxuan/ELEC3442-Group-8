@@ -170,6 +170,7 @@ class Sensor:
             return 20.0
         try:
             temperature = self.sense.get_temperature()
+            print(f"Temperature reading: {temperature:.1f}°C")
         except Exception as e:
             print(f"Error reading temperature: {e}. Using default value of 20.0°C.")
             temperature = 20.0
@@ -180,6 +181,7 @@ class Sensor:
             return 60.0
         try:
             humidity = self.sense.get_humidity()
+            print(f"Humidity reading: {humidity:.1f}%")
         except Exception as e:
             print(f"Error reading humidity: {e}. Using default value of 60.0%.")
             humidity = 60.0
@@ -190,6 +192,7 @@ class Sensor:
             return 1013.25
         try:
             pressure = self.sense.get_pressure()
+            print(f"Pressure reading: {pressure:.1f} hPa")
         except Exception as e:
             print(f"Error reading pressure: {e}. Using default value of 1013.25 hPa.")
             pressure = 1013.25

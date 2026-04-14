@@ -198,7 +198,15 @@ def llm_worker(
             cluster_profile = get_cluster_profile(cluster) or {}
             cluster_profile["cluster_id"] = cluster
             cluster_label = str(cluster_profile.get("label", "Unknown"))
-
+            #FIXME: remove print and directly log to sensehat in the future after confirming the pipeline is stable.
+            print(f"""
+--- Sleep Report Analysis ---
+Predicted Sleep Quality Cluster: {cluster} ({cluster_label})
+Summary: {cluster_profile.get("summary", "N/A")}
+Likely Risks: {', '.join(cluster_profile.get("likely_risks", []))}
+Recommended Work Style: {cluster_profile.get("recommended_work_style", "N/A")}
+--- Ready for LED Display and LLM Input Construction ---
+""")
             controller.led_display(cluster)
             environment = {
                 "temperature_c": float(controller.sensor.get_temperature()),
