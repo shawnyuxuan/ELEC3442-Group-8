@@ -13,12 +13,26 @@ import threading
 import time
 from typing import Any
 
-from src.calendar_interaction import CalendarController
+from src.calendar_interaction import CalendarController, DEFAULT_CALENDAR_NAME
 from src.daily_analysis import SleepReportListener
-from src.sensehat_behavior import SenseHatController, get_cluster_profile
+from src.llm_contract import CalendarOperation, ScheduleRecommendation
+from src.llm_interaction import (
+    DEFAULT_MODEL,
+    DEFAULT_PROVIDER,
+    EnvironmentContext,
+    LLMInput,
+    ScheduleItem,
+    SleepAssessment,
+    UserConstraints,
+    generate_schedule_recommendation,
+)
+from src.schedule_rules import schedule_item_from_calendar_event
+from src.sensehat_behavior import SenseHatController, get_cluster_profile, get_mock_schedule
 
 QUEUE_MAXSIZE = 100
 WORKER_POLL_TIMEOUT_SECONDS = 1
+CALENDAR_READ_MAX_ATTEMPTS = 3
+CALENDAR_READ_RETRY_SECONDS = 2
 SENTINEL = object()
 
 def log(stage: str, message: str):
@@ -35,35 +49,89 @@ def normalize_report_date(date_text: str) -> datetime.datetime:
             continue
     return datetime.datetime.combine(datetime.datetime.now().date(), datetime.time.min)
 
-# TODO: The LLM output should be structured and this method should be refactored to parse that structured output 
-# instead of using a mock implementation and generating the calendar operation directly here.
-def build_calendar_ops_from_llm(
-    sleep_report: dict[str, Any],
-    cluster: int,
-    prompt: str,
-    environment: dict[str, float],
-    cluster_label: str,
-) -> list[dict[str, Any]]:
-    date_text = str(sleep_report.get("date", ""))
-    total_sleep = sleep_report.get("total")
-    recommendation_summary = (
-        f"Sleep total: {total_sleep}h; cluster={cluster} ({cluster_label}). "
-        f"Env: {environment['temperature_c']:.1f}C/{environment['humidity_percent']:.1f}%/{environment['pressure_hpa']:.1f}hPa. "
-        f"Sense prompt: {prompt[:120].replace(chr(10), ' ')}"
-    )
-
+def build_mock_schedule_items() -> list[ScheduleItem]:
     return [
-        {
-            "action": "update_existing",
-            "target_date": date_text,
-            "new_description": recommendation_summary,
-            "meta": {
-                "cluster": cluster,
-                "cluster_label": cluster_label,
-                "environment": environment,
-            },
-        }
+        ScheduleItem(
+            item.get("event_id"),
+            item["start"],
+            item["end"],
+            item["task"],
+            str(item.get("description", "")),
+            item["intensity"],
+            item["movable"],
+        )
+        for item in get_mock_schedule()
     ]
+
+
+def build_schedule_from_calendar(calendar_name: str, date_text: str) -> list[ScheduleItem]:
+    date_start = normalize_report_date(date_text)
+    last_error: Exception | None = None
+
+    for attempt in range(1, CALENDAR_READ_MAX_ATTEMPTS + 1):
+        try:
+            controller = CalendarController(calendar_name=calendar_name)
+            events = controller.fetch_events(date_start)
+            break
+        except Exception as exc:
+            last_error = exc
+            if attempt < CALENDAR_READ_MAX_ATTEMPTS:
+                log(
+                    "calendar-read",
+                    (
+                        f"failed to read calendar '{calendar_name}' for {date_text} "
+                        f"(attempt {attempt}/{CALENDAR_READ_MAX_ATTEMPTS}): {exc}"
+                    ),
+                )
+                time.sleep(CALENDAR_READ_RETRY_SECONDS)
+                continue
+            raise RuntimeError(
+                f"Failed to read calendar '{calendar_name}' for {date_text} after "
+                f"{CALENDAR_READ_MAX_ATTEMPTS} attempts: {exc}"
+            ) from exc
+
+    schedule = []
+    for event in events:
+        schedule.append(schedule_item_from_calendar_event(event))
+
+    return schedule
+
+# Build the same structured LLM input contract used by llm_interaction.py so the
+# calendar pipeline and standalone script share one output format.
+def build_llm_input_from_report(
+    sleep_report: dict[str, Any],
+    cluster_profile: dict[str, Any],
+    environment: dict[str, float],
+    calendar_name: str,
+) -> LLMInput:
+    date_text = str(sleep_report.get("date", "")) or datetime.datetime.now().date().isoformat()
+    schedule = build_schedule_from_calendar(calendar_name=calendar_name, date_text=date_text)
+
+    return LLMInput(
+        schedule_date=date_text,
+        user_name="Jayden",
+        provider=DEFAULT_PROVIDER,
+        model=DEFAULT_MODEL,
+        sleep_assessment=SleepAssessment(
+            cluster_id=int(cluster_profile.get("cluster_id", -1)),
+            cluster_label=str(cluster_profile.get("label", "Unknown")),
+            summary=str(cluster_profile.get("summary", "")),
+            likely_risks=[str(item) for item in cluster_profile.get("likely_risks", [])],
+            recommended_work_style=str(cluster_profile.get("recommended_work_style", "")),
+        ),
+        environment=EnvironmentContext(
+            temperature_c=float(environment["temperature_c"]),
+            humidity_percent=float(environment["humidity_percent"]),
+            pressure_hpa=float(environment["pressure_hpa"]),
+        ),
+        schedule=schedule,
+        constraints=UserConstraints(
+            preserve_fixed_events=True,
+            avoid_medical_claims=True,
+            max_schedule_changes=3,
+            preferred_output_language="English",
+        ),
+    )
 
 
 def build_sleep_features_from_report(sleep_report: dict[str, Any]) -> pd.DataFrame:
@@ -94,6 +162,7 @@ def llm_worker(
     sleep_report_queue: queue.Queue,
     calendar_ops_queue: queue.Queue,
     stop_event: threading.Event,
+    calendar_name: str,
 ):
     thread_name = threading.current_thread().name
     log(thread_name, "started")
@@ -127,6 +196,7 @@ def llm_worker(
 
             cluster = int(controller.predict_sleep_quality(features))
             cluster_profile = get_cluster_profile(cluster) or {}
+            cluster_profile["cluster_id"] = cluster
             cluster_label = str(cluster_profile.get("label", "Unknown"))
 
             controller.led_display(cluster)
@@ -135,24 +205,22 @@ def llm_worker(
                 "humidity_percent": float(controller.sensor.get_humidity()),
                 "pressure_hpa": float(controller.sensor.get_pressure()),
             }
-            prompt = controller.generate_prompt(cluster)
-
-            calendar_ops = build_calendar_ops_from_llm(
+            llm_input = build_llm_input_from_report(
                 sleep_report=payload,
-                cluster=cluster,
-                prompt=prompt,
+                cluster_profile=cluster_profile,
                 environment=environment,
-                cluster_label=cluster_label,
+                calendar_name=calendar_name,
             )
+            recommendation = generate_schedule_recommendation(llm_input)
 
-            for operation in calendar_ops:
-                calendar_ops_queue.put(operation, timeout=2)
+            calendar_ops_queue.put(recommendation, timeout=2)
 
             log(
                 thread_name,
                 (
                     f"processed report date={payload.get('date')} cluster={cluster}({cluster_label}) "
-                    f"sleep_queue={sleep_report_queue.qsize()} ops_queue={calendar_ops_queue.qsize()}"
+                    f"sleep_queue={sleep_report_queue.qsize()} ops_queue={calendar_ops_queue.qsize()} "
+                    f"llm_ops={len(recommendation.calendar_operations)}"
                 ),
             )
         except Exception as exc:
@@ -176,53 +244,126 @@ def calendar_worker(calendar_ops_queue: queue.Queue, stop_event: threading.Event
             controller = CalendarController(calendar_name=calendar_name)
         return controller
 
-    def is_keepalive_timeout(error: Exception) -> bool:
-        return "keepalive timeout" in str(error).lower()
+    def is_retryable_calendar_error(error: Exception) -> bool:
+        message = str(error).lower()
+        return "keepalive timeout" in message or "read timed out" in message
+
+    def rollback_operations(
+        date_start: datetime.datetime,
+        inverse_operations: list[CalendarOperation],
+    ):
+        nonlocal controller
+        if not inverse_operations:
+            return
+
+        log(thread_name, f"starting rollback for {len(inverse_operations)} operations")
+        for inverse_operation in reversed(inverse_operations):
+            operation_label = (
+                f"{inverse_operation.target.title} {inverse_operation.target.start}-{inverse_operation.target.end} -> "
+                f"{inverse_operation.updated.start}-{inverse_operation.updated.end}"
+            )
+            for attempt in range(1, 4):
+                try:
+                    active_controller = get_controller(force_refresh=(attempt > 1))
+                    active_controller.apply_calendar_operation(date_start, inverse_operation)
+                    log(thread_name, f"rolled back operation {operation_label}")
+                    break
+                except Exception as exc:
+                    controller = None
+                    if is_retryable_calendar_error(exc) and attempt < 3:
+                        log(
+                            thread_name,
+                            (
+                                f"rollback retry {attempt}/3 for {operation_label}: {exc}"
+                            ),
+                        )
+                        continue
+                    log(thread_name, f"rollback failed for {operation_label}: {exc}")
+                    break
 
     while True:
         if stop_event.is_set() and calendar_ops_queue.empty():
             break
 
         try:
-            operation = calendar_ops_queue.get(timeout=WORKER_POLL_TIMEOUT_SECONDS)
+            recommendation = calendar_ops_queue.get(timeout=WORKER_POLL_TIMEOUT_SECONDS)
         except queue.Empty:
             continue
 
-        if operation is SENTINEL:
+        if recommendation is SENTINEL:
             calendar_ops_queue.task_done()
             log(thread_name, "received sentinel and exiting")
             break
 
         try:
-            if operation.get("action") != "update_existing":
-                log(thread_name, f"unsupported action: {operation.get('action')}")
+            if not isinstance(recommendation, ScheduleRecommendation):
+                log(thread_name, f"unsupported recommendation payload: {type(recommendation).__name__}")
                 continue
 
-            date_start = normalize_report_date(str(operation.get("target_date", "")))
+            date_start = datetime.datetime.combine(
+                datetime.datetime.strptime(recommendation.date, "%Y-%m-%d").date(),
+                datetime.time.min,
+            )
+            attempts = 3
+            applied_operations = 0
+            inverse_operations: list[CalendarOperation] = []
 
-            attempts = 2
-            for attempt in range(1, attempts + 1):
-                try:
-                    active_controller = get_controller(force_refresh=(attempt > 1))
-                    events = active_controller.fetch_events(date_start)
+            active_controller = get_controller(force_refresh=True)
+            preflight = active_controller.preflight_operations(
+                date_start,
+                recommendation.calendar_operations,
+            )
+            for resolved, operation in zip(preflight, recommendation.calendar_operations):
+                log(
+                    thread_name,
+                    (
+                        f"preflight {resolved['status']} for "
+                        f"{operation.target.title} {operation.target.start}-{operation.target.end}"
+                    ),
+                )
 
-                    if not events:
-                        log(thread_name, f"no existing events found on {date_start.date()}, skipping")
+            for index, operation in enumerate(recommendation.calendar_operations):
+                operation_label = (
+                    f"{operation.target.title} {operation.target.start}-{operation.target.end} -> "
+                    f"{operation.updated.start}-{operation.updated.end}"
+                )
+                for attempt in range(1, attempts + 1):
+                    try:
+                        active_controller = get_controller(force_refresh=(attempt > 1))
+                        active_controller.apply_calendar_operation(date_start, operation)
+                        if preflight[index]["status"] != "updated":
+                            inverse_operation = preflight[index]["inverse_operation"]
+                            if inverse_operation is not None:
+                                inverse_operations.append(inverse_operation)
+                            applied_operations += 1
+                            log(thread_name, f"applied operation {operation_label}")
+                        else:
+                            log(thread_name, f"operation already applied {operation_label}")
                         break
+                    except Exception as exc:
+                        controller = None
+                        if is_retryable_calendar_error(exc) and attempt < attempts:
+                            log(
+                                thread_name,
+                                (
+                                    f"calendar operation retry {attempt}/{attempts} for "
+                                    f"{operation_label}: {exc}"
+                                ),
+                            )
+                            continue
+                        rollback_operations(date_start, inverse_operations)
+                        raise
 
-                    # Current phase only updates existing events, no new event creation.
-                    active_controller.update_event(
-                        event=events[0],
-                        new_description=str(operation.get("new_description", "")),
-                    )
-                    log(thread_name, f"updated first event on {date_start.date()}")
-                    break
-                except Exception as exc:
-                    controller = None
-                    if is_keepalive_timeout(exc) and attempt < attempts:
-                        log(thread_name, f"calendar session expired, rebuilding client and retrying: {exc}")
-                        continue
-                    raise
+            if recommendation.calendar_operations:
+                log(
+                    thread_name,
+                    f"applied {applied_operations}/{len(recommendation.calendar_operations)} operations on {recommendation.date}",
+                )
+            else:
+                log(
+                    thread_name,
+                    f"recommendation for {recommendation.date} required no calendar changes",
+                )
         except Exception as exc:
             log(thread_name, f"calendar update failed: {exc}")
         finally:
@@ -248,7 +389,7 @@ def start_pipeline(host: str = "0.0.0.0", port: int = 5888):
     calendar_ops_queue: queue.Queue = queue.Queue(maxsize=QUEUE_MAXSIZE)
     stop_event = threading.Event()
 
-    calendar_name = os.getenv("CALENDAR_NAME", "Home")
+    calendar_name = os.getenv("CALENDAR_NAME", DEFAULT_CALENDAR_NAME)
 
     threads = [
         threading.Thread(
@@ -260,7 +401,7 @@ def start_pipeline(host: str = "0.0.0.0", port: int = 5888):
         threading.Thread(
             target=llm_worker,
             name="llm-worker",
-            args=(sleep_report_queue, calendar_ops_queue, stop_event),
+            args=(sleep_report_queue, calendar_ops_queue, stop_event, calendar_name),
             daemon=True,
         ),
         threading.Thread(
