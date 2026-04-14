@@ -203,7 +203,8 @@ class CalendarController:
                 f"Could not find event matching target '{operation.target.title}' "
                 f"from {operation.target.start} to {operation.target.end}."
             )
-
+        if operation.action == "no_update":
+            return
         if operation.action in ("move", "restore"):
             vevent = event.vobject_instance.vevent
             self.update_event(

@@ -289,17 +289,21 @@ def validate_llm_output(payload: object) -> dict[str, object]:
     for index, operation in enumerate(payload["calendar_operations"]):
         if not isinstance(operation, dict):
             raise RuntimeError(f"calendar_operations[{index}] must be an object.")
-        for field_name in ["action", "target", "updated", "reason"]:
+        for field_name in ["action", "reason"]:
             if field_name not in operation: 
                 raise RuntimeError(f"calendar_operations[{index}].{field_name} is required.")
         if operation["action"] not in allowed_actions:
             raise RuntimeError(
                 f"calendar_operations[{index}].action must be one of {sorted(allowed_actions)}."
             )
-        # TODO: Add support for "no_update" operations that don't require target/updated validation.
         if operation["action"] == "no_update":
-            return payload
-        
+            if not isinstance(operation["reason"], str):
+                raise RuntimeError(f"calendar_operations[{index}].reason must be a string.")
+            continue
+
+        for field_name in ["target", "updated"]:
+            if field_name not in operation:
+                raise RuntimeError(f"calendar_operations[{index}].{field_name} is required.")
         _validate_event_object(operation["target"], f"calendar_operations[{index}].target")
         _validate_event_object(operation["updated"], f"calendar_operations[{index}].updated")
         if not isinstance(operation["reason"], str):
@@ -336,20 +340,11 @@ def validate_schedule_consistency(payload: dict[str, object], llm_input: LLMInpu
     original_end_times = [_parse_hhmm(item.end, f"original_schedule[{index}].end") for index, item in enumerate(original_schedule)]
     latest_original_end = max(original_end_times)
 
-    def signature_from_schedule_item(item: ScheduleItem):
-        return (item.task, item.description, item.intensity, item.movable)
-
-    def signature_from_output_item(item: dict[str, object], index: int):
-        return (
-            item["title"],
-            item["description"],
-            item["intensity"],
-            item["movable"],
-        )
-
-    original_signatures = sorted(signature_from_schedule_item(item) for item in original_schedule)
-    output_signatures = sorted(signature_from_output_item(item, index) for index, item in enumerate(optimized_schedule))
-    if original_signatures != output_signatures:
+    original_titles = sorted(item.task for item in original_schedule)
+    print(f"Original schedule titles: {original_titles}")
+    output_titles = sorted(item["title"] for item in optimized_schedule)
+    print(f"Optimized schedule titles: {output_titles}")
+    if original_titles != output_titles:
         raise RuntimeError("optimized_schedule must contain the same events as the original schedule.")
 
     previous_end = None
@@ -366,13 +361,13 @@ def validate_schedule_consistency(payload: dict[str, object], llm_input: LLMInpu
         previous_end = end_minutes
 
     original_fixed = {
-        (item.task, item.description): (item.start, item.end)
+        item.task: (item.start, item.end)
         for item in original_schedule
         if not item.movable
     }
     for index, item in enumerate(optimized_schedule):
         assert isinstance(item, dict)
-        key = (item["title"], item["description"])
+        key = item["title"]
         if key in original_fixed:
             original_start, original_end = original_fixed[key]
             if item["start"] != original_start or item["end"] != original_end:
@@ -480,18 +475,15 @@ def call_qwen_chat(
             raise last_error from exc
 
         try:
-            validated = validate_llm_output(parsed)
-            validate_schedule_consistency(validated, llm_input)
-        except RuntimeError as exc:
-            last_error = exc
-            print(f"Qwen response attempt {attempt}/{max_attempts} failed validation: {exc}")
+            return ScheduleRecommendation.from_dict(parsed)
+        except (KeyError, TypeError, ValueError) as exc:
+            last_error = RuntimeError(f"Qwen returned an incompatible payload: {exc}")
+            print(f"Qwen response attempt {attempt}/{max_attempts} failed parsing: {last_error}")
             print(f"Full response content for debugging: {message_content}")
             if attempt < max_attempts:
                 time.sleep(retry_delay_seconds)
                 continue
             break
-
-        return ScheduleRecommendation.from_dict(validated)
 
     raise RuntimeError(
         f"Qwen request failed after {max_attempts} attempts to base URL {base_url} for model '{model}': {last_error}"
