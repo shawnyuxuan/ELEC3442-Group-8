@@ -176,9 +176,20 @@ class CalendarController:
         }
 
     def preflight_operations(self, date_start, operations: list[CalendarOperation]):
-        events = self.fetch_events(date_start)
+        events = None
         preflight = []
         for operation in operations:
+            if operation.action == "no_update":
+                preflight.append(
+                    {
+                        "status": "no_update",
+                        "event": None,
+                        "inverse_operation": None,
+                    }
+                )
+                continue
+            if events is None:
+                events = self.fetch_events(date_start)
             resolved = self.resolve_operation_from_events(events, operation)
             if resolved["status"] == "missing":
                 raise Exception(
@@ -189,6 +200,13 @@ class CalendarController:
         return preflight
 
     def apply_calendar_operation(self, date_start, operation: CalendarOperation):
+        if operation.action == "no_update":
+            print(
+                f"No calendar update needed for calendar '{self.calendar_name}'. "
+                f"Reason: {operation.reason}"
+            )
+            return
+
         events = self.fetch_events(date_start)
         resolved = self.resolve_operation_from_events(events, operation)
         event = resolved["event"]
@@ -203,8 +221,6 @@ class CalendarController:
                 f"Could not find event matching target '{operation.target.title}' "
                 f"from {operation.target.start} to {operation.target.end}."
             )
-        if operation.action == "no_update":
-            return
         if operation.action in ("move", "restore"):
             vevent = event.vobject_instance.vevent
             self.update_event(

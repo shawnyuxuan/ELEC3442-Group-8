@@ -30,24 +30,32 @@ class CalendarEventData:
 @dataclass
 class CalendarOperation:
     action: str
-    target: CalendarEventData
-    updated: CalendarEventData
+    target: CalendarEventData | None
+    updated: CalendarEventData | None
     reason: str
 
     @classmethod
     def from_dict(cls, payload: dict):
         return cls(
             action=str(payload["action"]),
-            target=CalendarEventData.from_dict(payload["target"]),
-            updated=CalendarEventData.from_dict(payload["updated"]),
+            target=(
+                CalendarEventData.from_dict(payload["target"])
+                if payload.get("target") is not None
+                else None
+            ),
+            updated=(
+                CalendarEventData.from_dict(payload["updated"])
+                if payload.get("updated") is not None
+                else None
+            ),
             reason=str(payload["reason"]),
         )
 
     def to_dict(self):
         return {
             "action": self.action,
-            "target": self.target.to_dict(),
-            "updated": self.updated.to_dict(),
+            "target": None if self.target is None else self.target.to_dict(),
+            "updated": None if self.updated is None else self.updated.to_dict(),
             "reason": self.reason,
         }
 
