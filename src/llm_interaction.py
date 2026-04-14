@@ -285,17 +285,21 @@ def validate_llm_output(payload: object) -> dict[str, object]:
     if not isinstance(payload["calendar_operations"], list):
         raise RuntimeError("Field 'calendar_operations' must be a list.")
 
-    allowed_actions = {"move", "update_description"}
+    allowed_actions = {"move", "update_description", "no_update"}
     for index, operation in enumerate(payload["calendar_operations"]):
         if not isinstance(operation, dict):
             raise RuntimeError(f"calendar_operations[{index}] must be an object.")
         for field_name in ["action", "target", "updated", "reason"]:
-            if field_name not in operation:
+            if field_name not in operation: 
                 raise RuntimeError(f"calendar_operations[{index}].{field_name} is required.")
         if operation["action"] not in allowed_actions:
             raise RuntimeError(
                 f"calendar_operations[{index}].action must be one of {sorted(allowed_actions)}."
             )
+        # TODO: Add support for "no_update" operations that don't require target/updated validation.
+        if operation["action"] == "no_update":
+            return payload
+        
         _validate_event_object(operation["target"], f"calendar_operations[{index}].target")
         _validate_event_object(operation["updated"], f"calendar_operations[{index}].updated")
         if not isinstance(operation["reason"], str):
@@ -481,6 +485,7 @@ def call_qwen_chat(
         except RuntimeError as exc:
             last_error = exc
             print(f"Qwen response attempt {attempt}/{max_attempts} failed validation: {exc}")
+            print(f"Full response content for debugging: {message_content}")
             if attempt < max_attempts:
                 time.sleep(retry_delay_seconds)
                 continue

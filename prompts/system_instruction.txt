@@ -48,15 +48,17 @@ Output requirements:
 8. Allowed action values are:
    - move
    - update_description
-9. Both target and updated must be objects with exactly these fields:
+   - no_update
+9. Use "no_update" for action in calendar_operations when there is no change needed for the current calendar.
+10. Both target and updated must be objects with exactly these fields:
    - event_id
    - title
    - start
    - end
    - description
-10. Use null for event_id when no event ID is available.
-11. The optimized_schedule field must contain the full final schedule, with every original event appearing exactly once.
-12. Each optimized_schedule item must contain:
+11. Use null for event_id when no event ID is available.
+12. The optimized_schedule field must contain the full final schedule, with every original event appearing exactly once.
+13. Each optimized_schedule item must contain:
    - event_id
    - title
    - start
@@ -64,6 +66,6 @@ Output requirements:
    - description
    - intensity
    - movable
-13. Use HH:MM format for start and end times.
-14. Preserve fixed events in both calendar_operations and optimized_schedule.
-15. The optimized_schedule must have no overlaps, no missing events, and no extension beyond the original schedule boundary.
+14. Use HH:MM format for start and end times.
+15. Preserve fixed events in both calendar_operations and optimized_schedule.
+16. The optimized_schedule must have no overlaps, no missing events, and no extension beyond the original schedule boundary.
