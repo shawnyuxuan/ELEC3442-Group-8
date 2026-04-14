@@ -100,6 +100,20 @@ class CalendarController:
             "description": description,
         }
 
+    def _require_operation_target(self, operation: CalendarOperation) -> CalendarEventData:
+        if operation.target is None:
+            raise Exception(
+                f"Calendar operation '{operation.action}' is missing required target event data."
+            )
+        return operation.target
+
+    def _require_operation_updated(self, operation: CalendarOperation) -> CalendarEventData:
+        if operation.updated is None:
+            raise Exception(
+                f"Calendar operation '{operation.action}' is missing required updated event data."
+            )
+        return operation.updated
+
     def _event_data_to_fields(self, event_data: CalendarEventData):
         return {
             "title": event_data.title,
@@ -110,20 +124,22 @@ class CalendarController:
 
     def _build_expected_updated_event(self, operation: CalendarOperation) -> CalendarEventData:
         if operation.action == "restore":
-            return operation.updated
+            return self._require_operation_updated(operation)
 
         if operation.action in ("move", "update_description"):
+            updated = self._require_operation_updated(operation)
+            target = self._require_operation_target(operation)
             return CalendarEventData(
-                event_id=operation.updated.event_id,
-                title=operation.updated.title,
-                start=operation.updated.start,
-                end=operation.updated.end,
+                event_id=updated.event_id,
+                title=updated.title,
+                start=updated.start,
+                end=updated.end,
                 description=self._build_modified_description_from_text(
-                    operation.target.description,
+                    target.description,
                     operation,
                 ),
-                intensity=operation.updated.intensity,
-                movable=operation.updated.movable,
+                intensity=updated.intensity,
+                movable=updated.movable,
             )
 
         raise Exception(f"Unsupported calendar operation: {operation.action}")
@@ -133,7 +149,7 @@ class CalendarController:
         return CalendarOperation(
             action="restore",
             target=expected_updated,
-            updated=operation.target,
+            updated=self._require_operation_target(operation),
             reason=f"Rollback of: {operation.reason}",
         )
 
@@ -153,7 +169,8 @@ class CalendarController:
         return self.find_event_by_fields(events, self._event_data_to_fields(target))
 
     def resolve_operation_from_events(self, events, operation: CalendarOperation):
-        event = self.find_event_by_target(events, operation.target)
+        target = self._require_operation_target(operation)
+        event = self.find_event_by_target(events, target)
         if event is not None:
             return {
                 "status": "target",
@@ -192,9 +209,10 @@ class CalendarController:
                 events = self.fetch_events(date_start)
             resolved = self.resolve_operation_from_events(events, operation)
             if resolved["status"] == "missing":
+                target = self._require_operation_target(operation)
                 raise Exception(
-                    f"Could not find event matching target '{operation.target.title}' "
-                    f"from {operation.target.start} to {operation.target.end}."
+                    f"Could not find event matching target '{target.title}' "
+                    f"from {target.start} to {target.end}."
                 )
             preflight.append(resolved)
         return preflight
@@ -211,25 +229,28 @@ class CalendarController:
         resolved = self.resolve_operation_from_events(events, operation)
         event = resolved["event"]
         if resolved["status"] == "updated":
+            target = self._require_operation_target(operation)
             print(
-                f"Calendar operation for '{operation.target.title}' already appears to be applied in "
+                f"Calendar operation for '{target.title}' already appears to be applied in "
                 f"calendar '{self.calendar_name}'."
             )
             return
         if resolved["status"] == "missing" or event is None:
+            target = self._require_operation_target(operation)
             raise Exception(
-                f"Could not find event matching target '{operation.target.title}' "
-                f"from {operation.target.start} to {operation.target.end}."
+                f"Could not find event matching target '{target.title}' "
+                f"from {target.start} to {target.end}."
             )
         if operation.action in ("move", "restore"):
+            updated = self._require_operation_updated(operation)
             vevent = event.vobject_instance.vevent
             self.update_event(
                 event=event,
-                new_title=operation.updated.title,
-                new_start_time=self._rebuild_datetime_like(vevent.dtstart.value, operation.updated.start),
-                new_end_time=self._rebuild_datetime_like(vevent.dtend.value, operation.updated.end),
+                new_title=updated.title,
+                new_start_time=self._rebuild_datetime_like(vevent.dtstart.value, updated.start),
+                new_end_time=self._rebuild_datetime_like(vevent.dtend.value, updated.end),
                 new_description=(
-                    operation.updated.description
+                    updated.description
                     if operation.action == "restore"
                     else self._build_modified_description(event, operation)
                 ),

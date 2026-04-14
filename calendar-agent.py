@@ -248,6 +248,19 @@ def calendar_worker(calendar_ops_queue: queue.Queue, stop_event: threading.Event
         message = str(error).lower()
         return "keepalive timeout" in message or "read timed out" in message
 
+    def format_operation_label(operation: CalendarOperation) -> str:
+        if operation.action == "no_update":
+            return f"no_update ({operation.reason})"
+
+        target = operation.target
+        updated = operation.updated
+        target_title = target.title if target is not None else "<missing-target>"
+        target_start = target.start if target is not None else "??:??"
+        target_end = target.end if target is not None else "??:??"
+        updated_start = updated.start if updated is not None else "??:??"
+        updated_end = updated.end if updated is not None else "??:??"
+        return f"{target_title} {target_start}-{target_end} -> {updated_start}-{updated_end}"
+
     def rollback_operations(
         date_start: datetime.datetime,
         inverse_operations: list[CalendarOperation],
@@ -258,10 +271,7 @@ def calendar_worker(calendar_ops_queue: queue.Queue, stop_event: threading.Event
 
         log(thread_name, f"starting rollback for {len(inverse_operations)} operations")
         for inverse_operation in reversed(inverse_operations):
-            operation_label = (
-                f"{inverse_operation.target.title} {inverse_operation.target.start}-{inverse_operation.target.end} -> "
-                f"{inverse_operation.updated.start}-{inverse_operation.updated.end}"
-            )
+            operation_label = format_operation_label(inverse_operation)
             for attempt in range(1, 4):
                 try:
                     active_controller = get_controller(force_refresh=(attempt > 1))
@@ -306,6 +316,7 @@ def calendar_worker(calendar_ops_queue: queue.Queue, stop_event: threading.Event
             )
             attempts = 3
             applied_operations = 0
+            skipped_no_update_operations = 0
             inverse_operations: list[CalendarOperation] = []
 
             active_controller = get_controller(force_refresh=True)
@@ -314,24 +325,22 @@ def calendar_worker(calendar_ops_queue: queue.Queue, stop_event: threading.Event
                 recommendation.calendar_operations,
             )
             for resolved, operation in zip(preflight, recommendation.calendar_operations):
+                operation_label = format_operation_label(operation)
                 log(
                     thread_name,
-                    (
-                        f"preflight {resolved['status']} for "
-                        f"{operation.target.title} {operation.target.start}-{operation.target.end}"
-                    ),
+                    f"preflight {resolved['status']} for {operation_label}",
                 )
 
             for index, operation in enumerate(recommendation.calendar_operations):
-                operation_label = (
-                    f"{operation.target.title} {operation.target.start}-{operation.target.end} -> "
-                    f"{operation.updated.start}-{operation.updated.end}"
-                )
+                operation_label = format_operation_label(operation)
                 for attempt in range(1, attempts + 1):
                     try:
                         active_controller = get_controller(force_refresh=(attempt > 1))
                         active_controller.apply_calendar_operation(date_start, operation)
-                        if preflight[index]["status"] != "updated":
+                        if preflight[index]["status"] == "no_update":
+                            skipped_no_update_operations += 1
+                            log(thread_name, f"no calendar update required for {operation_label}")
+                        elif preflight[index]["status"] != "updated":
                             inverse_operation = preflight[index]["inverse_operation"]
                             if inverse_operation is not None:
                                 inverse_operations.append(inverse_operation)
@@ -354,10 +363,18 @@ def calendar_worker(calendar_ops_queue: queue.Queue, stop_event: threading.Event
                         rollback_operations(date_start, inverse_operations)
                         raise
 
-            if recommendation.calendar_operations:
+            if recommendation.calendar_operations and skipped_no_update_operations == len(recommendation.calendar_operations):
                 log(
                     thread_name,
-                    f"applied {applied_operations}/{len(recommendation.calendar_operations)} operations on {recommendation.date}",
+                    f"recommendation for {recommendation.date} required no calendar changes",
+                )
+            elif recommendation.calendar_operations:
+                log(
+                    thread_name,
+                    (
+                        f"applied {applied_operations} operations, skipped "
+                        f"{skipped_no_update_operations} no_update operations on {recommendation.date}"
+                    ),
                 )
             else:
                 log(
