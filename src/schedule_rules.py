@@ -1,23 +1,16 @@
 from src.llm_interaction import ScheduleItem
 
 
-HIGH_INTENSITY_KEYWORDS = ("project", "assignment", "deadline", "report", "study")
-MEDIUM_INTENSITY_KEYWORDS = ("meeting", "lecture", "class", "lab", "tutorial")
-MOVABLE_KEYWORDS = ("project", "assignment", "task", "study", "review")
+BLACKLIST_KEYWORDS = ("elec", "comp", "meeting", "interview")
 
 
 def infer_event_intensity(title: str, description: str) -> str:
-    lowered = f"{title} {description}".lower()
-    if any(keyword in lowered for keyword in HIGH_INTENSITY_KEYWORDS):
-        return "high"
-    if any(keyword in lowered for keyword in MEDIUM_INTENSITY_KEYWORDS):
-        return "medium"
-    return "low"
+    return "medium"
 
 
 def infer_event_movable(title: str, description: str) -> bool:
     lowered = f"{title} {description}".lower()
-    return any(keyword in lowered for keyword in MOVABLE_KEYWORDS)
+    return not any(keyword in lowered for keyword in BLACKLIST_KEYWORDS)
 
 
 def schedule_item_from_calendar_event(event) -> ScheduleItem:
