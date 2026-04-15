@@ -18,6 +18,10 @@ Environment:
 Original schedule:
 {schedule_lines}
 
+EVENT REFERENCE TABLE (use these exact objects for calendar_operations):
+For each original event, here is its complete data that MUST be used in calendar_operations entries:
+{event_reference_table}
+
 Constraints:
 - Preserve fixed events: {preserve_fixed_events}
 - Avoid medical claims: {avoid_medical_claims}
@@ -35,34 +39,26 @@ Return one JSON object only. The JSON must contain:
 - optimized_schedule
 
 CRITICAL INSTRUCTION FOR calendar_operations:
-1. Create exactly one calendar_operations entry for each original event
-2. Maintain the SAME ORDER as the original schedule
-3. For EVERY entry, BOTH target and updated MUST be provided (never null)
-4. For no_update entries:
-   - target = copy of original event data
-   - updated = copy of original event data
-   - reason = explanation why no change is needed
-5. For move and update_description entries:
-   - target = original event data (event_id, title, start, end, description)
-   - updated = modified event data with new times/descriptions
-   - reason = explanation of the change
-6. Each target/updated object must include: event_id, title, start, end, description
-7. Match calendar_operations entries to optimized_schedule by title and original times
+1. You MUST create EXACTLY ONE calendar_operations entry for EACH original event
+2. The calendar_operations array MUST have {num_events} items (same as original schedule count)
+3. Process events IN ORDER - first operation corresponds to Event #1, second to Event #2, etc.
+4. For EVERY entry, copy the exact event object from the EVENT REFERENCE TABLE above
+5. For no_update entries:
+   - "target": copy exact object from EVENT REFERENCE TABLE
+   - "updated": copy the SAME exact object (identical to target)
+   - "reason": explanation why no change is needed
+6. For move entries:
+   - "target": copy exact object from EVENT REFERENCE TABLE  
+   - "updated": COPY from EVENT REFERENCE TABLE, but ONLY change "start" and "end" times
+   - "reason": explanation why you're moving it
+7. For update_description entries:
+   - "target": copy exact object from EVENT REFERENCE TABLE
+   - "updated": COPY from EVENT REFERENCE TABLE, but ONLY change "description" field
+   - "reason": explanation why you're updating description
+8. MISTAKES TO AVOID - target and updated MUST be complete JSON objects:
+   - ❌ "target": "event_id" (string - WRONG)
+   - ❌ "target": null (null - WRONG)
+   - ❌ "target": {{"title": "..."}} (incomplete - WRONG)
+   - ✓ "target": {{"event_id": null, "title": "Morning Meeting", "start": "09:00", "end": "10:00", "description": "..."}} (complete and correct)
+9. Use the EVENT REFERENCE TABLE above as a template - simply copy the JSON objects and modify only the necessary fields
 
-Example calendar_operations structure:
-[
-  {{
-    "action": "no_update",
-    "target": {{"event_id": "...", "title": "Morning Meeting", "start": "09:00", "end": "10:00", "description": "..."}},
-    "updated": {{"event_id": "...", "title": "Morning Meeting", "start": "09:00", "end": "10:00", "description": "..."}},
-    "reason": "Fixed event cannot be moved"
-  }},
-  {{
-    "action": "move",
-    "target": {{"event_id": "...", "title": "Deep Work", "start": "10:00", "end": "12:00", "description": "..."}},
-    "updated": {{"event_id": "...", "title": "Deep Work", "start": "14:00", "end": "16:00", "description": "..."}},
-    "reason": "Moved to afternoon for better focus"
-  }}
-]
-
-Use optimized_schedule for the full final schedule in chronological order.

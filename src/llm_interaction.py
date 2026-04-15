@@ -105,6 +105,20 @@ def build_user_prompt(llm_input: LLMInput) -> str:
             f"| description={item.description} | intensity={item.intensity} | {movable_label}"
         )
 
+    # Build event reference table for LLM to use in calendar_operations
+    event_reference_table = []
+    for idx, item in enumerate(llm_input.schedule, 1):
+        event_obj = {
+            "event_id": item.event_id,
+            "title": item.task,
+            "start": item.start,
+            "end": item.end,
+            "description": item.description,
+        }
+        event_reference_table.append(
+            f"Event #{idx}: {json.dumps(event_obj, ensure_ascii=False)}"
+        )
+
     template = load_template(USER_TEMPLATE_PATH)
     return template.format(
         schedule_date=llm_input.schedule_date,
@@ -121,6 +135,7 @@ def build_user_prompt(llm_input: LLMInput) -> str:
         pressure_hpa=llm_input.environment.pressure_hpa,
         num_events=len(llm_input.schedule),
         schedule_lines="\n".join(schedule_lines),
+        event_reference_table="\n".join(event_reference_table),
         preserve_fixed_events=llm_input.constraints.preserve_fixed_events,
         avoid_medical_claims=llm_input.constraints.avoid_medical_claims,
         max_schedule_changes=llm_input.constraints.max_schedule_changes,
@@ -329,40 +344,49 @@ def validate_calendar_operations(operations: list, llm_input: LLMInput) -> list:
             raise RuntimeError(f"calendar_operations[{idx}] action '{action}' must be one of {allowed_actions}")
         
         if action == "no_update":
-            # For no_update, target and updated must match original if missing
-            if "target" not in op:
+            # For no_update, target and updated must match original - allow some flexibility here
+            # since no_update means no change and using the original event is semantically correct
+            if "target" not in op or op["target"] is None or not isinstance(op["target"], dict):
+                if "target" in op and op["target"] is not None:
+                    print(f"[INFO] calendar_operations[{idx}].target was {type(op['target']).__name__}, "
+                          f"replacing with original event for no_update operation")
                 op["target"] = dict(original)
-            if "updated" not in op:
-                op["updated"] = dict(original)
-            # Ensure they are objects
-            if not isinstance(op["target"], dict):
-                op["target"] = dict(original)
-            if not isinstance(op["updated"], dict):
+            
+            if "updated" not in op or op["updated"] is None or not isinstance(op["updated"], dict):
+                if "updated" in op and op["updated"] is not None:
+                    print(f"[INFO] calendar_operations[{idx}].updated was {type(op['updated']).__name__}, "
+                          f"replacing with original event for no_update operation")
                 op["updated"] = dict(original)
             continue
         
         # For move and update_description, both target and updated should be provided
-        # If LLM returned null, use original event as fallback
+        # and MUST be objects, not strings or other types
         if "target" not in op or op["target"] is None:
-            print(f"[WARNING] calendar_operations[{idx}] (action={action}) 'target' is null, "
-                  f"using original event: {original['title']}")
-            op["target"] = dict(original)
+            raise RuntimeError(
+                f"calendar_operations[{idx}] (action={action}) missing required 'target' field. "
+                f"target must be a complete object with fields: event_id, title, start, end, description"
+            )
         
         if "updated" not in op or op["updated"] is None:
-            print(f"[WARNING] calendar_operations[{idx}] (action={action}) 'updated' is null, "
-                  f"using original event: {original['title']}")
-            op["updated"] = dict(original)
+            raise RuntimeError(
+                f"calendar_operations[{idx}] (action={action}) missing required 'updated' field. "
+                f"updated must be a complete object with fields: event_id, title, start, end, description"
+            )
         
-        # Ensure target and updated are objects (fix if LLM returned non-dict types)
+        # Strictly validate that target and updated are objects, not strings
         if not isinstance(op["target"], dict):
-            print(f"[WARNING] calendar_operations[{idx}].target is {type(op['target']).__name__}, "
-                  f"expected dict. Using original event instead")
-            op["target"] = dict(original)
+            raise RuntimeError(
+                f"calendar_operations[{idx}].target must be a JSON object (dict), "
+                f"not {type(op['target']).__name__}: {repr(op['target'])[:100]}. "
+                f"Ensure target has fields: event_id, title, start, end, description"
+            )
         
         if not isinstance(op["updated"], dict):
-            print(f"[WARNING] calendar_operations[{idx}].updated is {type(op['updated']).__name__}, "
-                  f"expected dict. Using original event instead")
-            op["updated"] = dict(original)
+            raise RuntimeError(
+                f"calendar_operations[{idx}].updated must be a JSON object (dict), "
+                f"not {type(op['updated']).__name__}: {repr(op['updated'])[:100]}. "
+                f"Ensure updated has fields: event_id, title, start, end, description"
+            )
         
         validate_event_object(op["target"], f"calendar_operations[{idx}].target")
         validate_event_object(op["updated"], f"calendar_operations[{idx}].updated")

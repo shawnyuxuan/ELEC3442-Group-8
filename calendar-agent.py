@@ -42,6 +42,7 @@ WORKER_POLL_TIMEOUT_SECONDS = 1
 CALENDAR_READ_MAX_ATTEMPTS = 3
 CALENDAR_READ_RETRY_SECONDS = 2
 SENTINEL = object()
+USER_NAME = os.getenv("USER_NAME", "Jayden")
 
 def log(stage: str, message: str):
     now = datetime.datetime.now().isoformat(timespec="seconds")
@@ -217,7 +218,7 @@ def llm_worker(
             
             llm_input = LLMInput(
                 schedule_date=date_text,
-                user_name="Jayden",
+                user_name=USER_NAME,
                 provider=DEFAULT_PROVIDER,
                 model=DEFAULT_MODEL,
                 sleep_assessment=SleepAssessment(

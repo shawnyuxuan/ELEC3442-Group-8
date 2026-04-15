@@ -44,17 +44,22 @@ Output requirements:
 6. The calendar_operations field MUST contain EXACTLY ONE ENTRY FOR EVERY ORIGINAL EVENT in the input schedule. Each entry describes how that event should be handled.
 7. Each calendar_operations item must have exactly these fields:
    - action (string: "move", "update_description", or "no_update")
-   - target (object: the original event data)
-   - updated (object: the modified or unchanged event data)
+   - target (OBJECT with 5 fields: event_id, title, start, end, description - NEVER a string or null)
+   - updated (OBJECT with 5 fields: event_id, title, start, end, description - NEVER a string or null)
    - reason (string: brief explanation)
-8. Allowed action values:
+8. CRITICAL: target and updated must ALWAYS be COMPLETE JSON OBJECTS:
+   - ❌ WRONG: "target": "event_id"
+   - ❌ WRONG: "target": null
+   - ✓ CORRECT: "target": {"event_id": "...", "title": "...", "start": "09:00", "end": "10:00", "description": "..."}
+9. Allowed action values:
    - "move": event is rescheduled to a new time
    - "update_description": event's description is updated but time remains same
    - "no_update": event remains exactly as it was
 9. For NO_UPDATE entries: target and updated are IDENTICAL COPIES of the original event.
 10. For MOVE entries: target is original event, updated has new times but same event_id, title, description.
 11. For UPDATE_DESCRIPTION entries: target is original event, updated has new description but same times.
-12. Each target and updated object MUST have these exact fields:
+12. CRITICAL: target and updated MUST ALWAYS BE COMPLETE OBJECTS, not strings, not abbreviated, not null.
+13. Each target and updated object MUST have these exact fields:
     - event_id (string or null)
     - title (string)
     - start (string in HH:MM format)
@@ -76,3 +81,165 @@ Output requirements:
     - optimized_schedule must preserve all original events (by title match)
     - optimized_schedule may NOT extend beyond the original schedule's latest end time
     - Fixed events (movable=false) must appear at the same time in optimized_schedule as in the original
+
+COMPLETE JSON OUTPUT EXAMPLE:
+
+{{
+  "date": "2026-04-14",
+  "daily_summary": "Adjusted schedule to accommodate sleep state by deferring high-focus tasks to afternoon and starting with light administrative work.",
+  "adjustment_principles": [
+    "Start with light administrative tasks",
+    "Defer deep focus work to afternoon",
+    "Preserve fixed meetings",
+    "Maintain chronological order"
+  ],
+  "calendar_operations": [
+    {{
+      "action": "no_update",
+      "target": {{
+        "event_id": null,
+        "title": "Morning Standup",
+        "start": "09:00",
+        "end": "09:30",
+        "description": "Daily team synchronization"
+      }},
+      "updated": {{
+        "event_id": null,
+        "title": "Morning Standup",
+        "start": "09:00",
+        "end": "09:30",
+        "description": "Daily team synchronization"
+      }},
+      "reason": "Fixed meeting, cannot be moved"
+    }},
+    {{
+      "action": "move",
+      "target": {{
+        "event_id": null,
+        "title": "Deep Work Session",
+        "start": "10:00",
+        "end": "12:00",
+        "description": "Focus on project deliverables"
+      }},
+      "updated": {{
+        "event_id": null,
+        "title": "Deep Work Session",
+        "start": "14:00",
+        "end": "16:00",
+        "description": "Focus on project deliverables"
+      }},
+      "reason": "Moved to afternoon for better cognitive performance"
+    }},
+    {{
+      "action": "update_description",
+      "target": {{
+        "event_id": null,
+        "title": "Admin Tasks",
+        "start": "10:00",
+        "end": "11:00",
+        "description": "Emails and organizational work"
+      }},
+      "updated": {{
+        "event_id": null,
+        "title": "Admin Tasks",
+        "start": "10:00",
+        "end": "11:00",
+        "description": "Emails and organizational work - prioritize during morning recovery phase"
+      }},
+      "reason": "Updated description to reflect timing strategy"
+    }},
+    {{
+      "action": "no_update",
+      "target": {{
+        "event_id": null,
+        "title": "Lunch",
+        "start": "12:00",
+        "end": "13:00",
+        "description": "Meal break"
+      }},
+      "updated": {{
+        "event_id": null,
+        "title": "Lunch",
+        "start": "12:00",
+        "end": "13:00",
+        "description": "Meal break"
+      }},
+      "reason": "Fixed meal time, maintain schedule"
+    }},
+    {{
+      "action": "no_update",
+      "target": {{
+        "event_id": null,
+        "title": "Team Review",
+        "start": "16:00",
+        "end": "17:00",
+        "description": "Weekly progress review"
+      }},
+      "updated": {{
+        "event_id": null,
+        "title": "Team Review",
+        "start": "16:00",
+        "end": "17:00",
+        "description": "Weekly progress review"
+      }},
+      "reason": "Fixed meeting time"
+    }}
+  ],
+  "optimized_schedule": [
+    {{
+      "event_id": null,
+      "title": "Morning Standup",
+      "start": "09:00",
+      "end": "09:30",
+      "description": "Daily team synchronization",
+      "intensity": "low",
+      "movable": false
+    }},
+    {{
+      "event_id": null,
+      "title": "Admin Tasks",
+      "start": "10:00",
+      "end": "11:00",
+      "description": "Emails and organizational work - prioritize during morning recovery phase",
+      "intensity": "low",
+      "movable": true
+    }},
+    {{
+      "event_id": null,
+      "title": "Lunch",
+      "start": "12:00",
+      "end": "13:00",
+      "description": "Meal break",
+      "intensity": "low",
+      "movable": false
+    }},
+    {{
+      "event_id": null,
+      "title": "Deep Work Session",
+      "start": "14:00",
+      "end": "16:00",
+      "description": "Focus on project deliverables",
+      "intensity": "high",
+      "movable": true
+    }},
+    {{
+      "event_id": null,
+      "title": "Team Review",
+      "start": "16:00",
+      "end": "17:00",
+      "description": "Weekly progress review",
+      "intensity": "medium",
+      "movable": false
+    }}
+  ]
+}}
+
+CRITICAL REQUIREMENTS FOR YOUR RESPONSE:
+1. ALWAYS include all 5 top-level fields: date, daily_summary, adjustment_principles, calendar_operations, optimized_schedule
+2. calendar_operations MUST have exactly {num_events} items (one per original event)
+3. optimized_schedule MUST have exactly {num_events} items (all original events in chronological order)
+4. NEVER use null for entire array items - all items must be complete objects
+5. NEVER omit or skip the optimized_schedule field
+6. All event objects must include: event_id, title, start, end, description, and (for optimized_schedule) intensity and movable
+7. Return ONLY the JSON object - no markdown, no explanation, no extra text
+
