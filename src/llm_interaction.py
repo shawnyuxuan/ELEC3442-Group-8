@@ -1,4 +1,3 @@
-import importlib.util
 import datetime
 import json
 import os
@@ -9,7 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import APIConnectionError, APIStatusError, OpenAI, OpenAIError
 from src.llm_contract import ScheduleRecommendation
-
+from src.sensehat_behavior import SenseHatController, get_cluster_profile
 
 load_dotenv()
 
@@ -19,15 +18,15 @@ DEFAULT_QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 SYSTEM_TEMPLATE_PATH = PROMPTS_DIR / "system_instruction.txt"
 USER_TEMPLATE_PATH = PROMPTS_DIR / "user_prompt_template.txt"
-SLEEP_MODEL_PATH = os.getenv("SLEEP_MODEL_PATH")
-PRINT_STRUCTURED_INPUT = True
-INVOKE_LLM = True
 
 
-# These data classes define the shared structure passed into the prompt layer.
-# The goal is to keep the LLM input explicit instead of passing around loose dicts.
+# ============================================================================
+# Data Structures: LLMInput represents the complete input to the LLM.
+# ============================================================================
+
 @dataclass
 class EnvironmentContext:
+    """Current environment conditions."""
     temperature_c: float
     humidity_percent: float
     pressure_hpa: float
@@ -35,6 +34,7 @@ class EnvironmentContext:
 
 @dataclass
 class ScheduleItem:
+    """A single calendar event."""
     event_id: str | None
     start: str
     end: str
@@ -46,6 +46,7 @@ class ScheduleItem:
 
 @dataclass
 class SleepAssessment:
+    """Sleep quality analysis result."""
     cluster_id: int
     cluster_label: str
     summary: str
@@ -55,6 +56,7 @@ class SleepAssessment:
 
 @dataclass
 class UserConstraints:
+    """Constraints on schedule optimization."""
     preserve_fixed_events: bool
     avoid_medical_claims: bool
     max_schedule_changes: int
@@ -63,6 +65,7 @@ class UserConstraints:
 
 @dataclass
 class LLMInput:
+    """Complete input passed to the LLM for schedule optimization."""
     schedule_date: str
     user_name: str
     provider: str
@@ -73,7 +76,60 @@ class LLMInput:
     constraints: UserConstraints
 
 
+
+
+# ============================================================================
+# Template Loading
+# ============================================================================
+
+def load_template(template_path: Path) -> str:
+    """Load template text from file."""
+    with open(template_path, "r", encoding="utf-8") as f:
+        return f.read().strip()
+
+
+def build_system_instruction() -> str:
+    """Load system instruction from template file."""
+    return load_template(SYSTEM_TEMPLATE_PATH)
+
+
+def build_user_prompt(llm_input: LLMInput) -> str:
+    """Format user prompt from LLMInput using template."""
+    # Convert schedule items to formatted lines
+    schedule_lines = []
+    for item in llm_input.schedule:
+        movable_label = "movable" if item.movable else "fixed"
+        event_id_str = "null" if item.event_id is None else json.dumps(item.event_id)
+        schedule_lines.append(
+            f"- event_id={event_id_str} | {item.start}-{item.end} | {item.task} "
+            f"| description={item.description} | intensity={item.intensity} | {movable_label}"
+        )
+
+    template = load_template(USER_TEMPLATE_PATH)
+    return template.format(
+        schedule_date=llm_input.schedule_date,
+        user_name=llm_input.user_name,
+        provider=llm_input.provider,
+        model=llm_input.model,
+        cluster_id=llm_input.sleep_assessment.cluster_id,
+        cluster_label=llm_input.sleep_assessment.cluster_label,
+        summary=llm_input.sleep_assessment.summary,
+        likely_risks=", ".join(llm_input.sleep_assessment.likely_risks),
+        recommended_work_style=llm_input.sleep_assessment.recommended_work_style,
+        temperature_c=llm_input.environment.temperature_c,
+        humidity_percent=llm_input.environment.humidity_percent,
+        pressure_hpa=llm_input.environment.pressure_hpa,
+        num_events=len(llm_input.schedule),
+        schedule_lines="\n".join(schedule_lines),
+        preserve_fixed_events=llm_input.constraints.preserve_fixed_events,
+        avoid_medical_claims=llm_input.constraints.avoid_medical_claims,
+        max_schedule_changes=llm_input.constraints.max_schedule_changes,
+        preferred_output_language=llm_input.constraints.preferred_output_language,
+    )
+
+
 def build_static_mock_input(provider: str, model: str) -> LLMInput:
+    """Build a static mock LLMInput for testing."""
     return LLMInput(
         schedule_date=datetime.date.today().isoformat(),
         user_name="Jayden",
@@ -117,27 +173,16 @@ def build_static_mock_input(provider: str, model: str) -> LLMInput:
     )
 
 
-def load_sensehat_module():
-    # sensehat-behavior.py owns the mock sleep input, model prediction, and cluster meaning.
-    # Load it dynamically so the LLM layer can reuse that logic without duplicating it.
-    module_path = Path(__file__).with_name("sensehat_behavior.py")
-    spec = importlib.util.spec_from_file_location("sensehat_behavior", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Failed to load sensehat module from {module_path}")
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def build_input_from_sensehat_mock(provider: str, model: str, sleep_model_path: str | None) -> LLMInput:
-    sensehat_module = load_sensehat_module()
-    controller = sensehat_module.SenseHatController(model_path=sleep_model_path)
+def build_input_from_sensehat_mock(provider: str, model: str) -> LLMInput:
+    """Build LLMInput from SenseHat sensor data (for local device testing)."""
+    sleep_model_path = os.getenv("SLEEP_MODEL_PATH")
+    controller = SenseHatController(model_path=sleep_model_path)
     sleep_data = controller.fetch_sleep_data()
     cluster = int(controller.predict_sleep_quality(sleep_data))
-    cluster_profile = sensehat_module.get_cluster_profile(cluster)
+    
+    cluster_profile = get_cluster_profile(cluster)
     if cluster_profile is None:
-        raise RuntimeError(f"Unsupported cluster profile: {cluster}")
+        raise RuntimeError(f"Unsupported sleep cluster: {cluster}")
 
     schedule = [
         ScheduleItem(
@@ -149,7 +194,7 @@ def build_input_from_sensehat_mock(provider: str, model: str, sleep_model_path: 
             item["intensity"],
             item["movable"],
         )
-        for item in sensehat_module.get_mock_schedule()
+        for item in SenseHatController.get_mock_schedule()
     ]
 
     return LLMInput(
@@ -179,244 +224,289 @@ def build_input_from_sensehat_mock(provider: str, model: str, sleep_model_path: 
     )
 
 
-def load_template(template_path: Path) -> str:
-    with open(template_path, "r", encoding="utf-8") as handle:
-        return handle.read().strip()
 
 
-def build_system_instruction(template_path: Path) -> str:
-    return load_template(template_path)
 
+# ============================================================================
+# Output Validation and Processing
+# ============================================================================
 
-def build_user_prompt(llm_input: LLMInput, template_path: Path) -> str:
-    # The text template stays outside Python so prompt editing does not require code changes.
-    schedule_lines = []
-    for item in llm_input.schedule:
-        movable = "movable" if item.movable else "fixed"
-        event_id = "null" if item.event_id is None else json.dumps(item.event_id)
-        schedule_lines.append(
-            (
-                f"- event_id={event_id} | {item.start}-{item.end} | {item.task} "
-                f"| description={item.description} | intensity={item.intensity} | {movable}"
-            )
-        )
-
-    template = load_template(template_path)
-    return template.format(
-        schedule_date=llm_input.schedule_date,
-        user_name=llm_input.user_name,
-        provider=llm_input.provider,
-        model=llm_input.model,
-        cluster_id=llm_input.sleep_assessment.cluster_id,
-        cluster_label=llm_input.sleep_assessment.cluster_label,
-        summary=llm_input.sleep_assessment.summary,
-        likely_risks=", ".join(llm_input.sleep_assessment.likely_risks),
-        recommended_work_style=llm_input.sleep_assessment.recommended_work_style,
-        temperature_c=llm_input.environment.temperature_c,
-        humidity_percent=llm_input.environment.humidity_percent,
-        pressure_hpa=llm_input.environment.pressure_hpa,
-        schedule_lines="\n".join(schedule_lines),
-        preserve_fixed_events=llm_input.constraints.preserve_fixed_events,
-        avoid_medical_claims=llm_input.constraints.avoid_medical_claims,
-        max_schedule_changes=llm_input.constraints.max_schedule_changes,
-        preferred_output_language=llm_input.constraints.preferred_output_language,
-    )
-
-
-def _validate_text_list(value: object, field_name: str):
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise RuntimeError(f"Field '{field_name}' must be a list of strings.")
-
-
-def _parse_hhmm(value: str, field_name: str) -> int:
+def parse_hhmm(value: str) -> int:
+    """Parse HH:MM format to total minutes."""
     try:
-        hours_text, minutes_text = value.split(":")
-        hours = int(hours_text)
-        minutes = int(minutes_text)
-    except ValueError as exc:
-        raise RuntimeError(f"Field '{field_name}' must use HH:MM format.") from exc
-
-    if not (0 <= hours <= 23 and 0 <= minutes <= 59):
-        raise RuntimeError(f"Field '{field_name}' must use a valid HH:MM time.")
-
-    return hours * 60 + minutes
+        hours, minutes = value.split(":")
+        h, m = int(hours), int(minutes)
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ValueError()
+        return h * 60 + m
+    except (ValueError, AttributeError):
+        raise RuntimeError(f"Invalid time format: {value}. Expected HH:MM.")
 
 
-def _validate_event_object(event: object, field_name: str):
+def validate_event_object(event: dict, context: str) -> dict:
+    """Validate event object has required fields."""
     if not isinstance(event, dict):
-        raise RuntimeError(f"Field '{field_name}' must be an object.")
-
-    required_fields = ["event_id", "title", "start", "end", "description"]
-    for key in required_fields:
+        raise RuntimeError(f"{context} must be an object, got {type(event).__name__}")
+    
+    required = ["event_id", "title", "start", "end", "description"]
+    for key in required:
         if key not in event:
-            raise RuntimeError(f"Field '{field_name}.{key}' is required.")
-
+            raise RuntimeError(f"{context}.{key} is required")
+    
     if event["event_id"] is not None and not isinstance(event["event_id"], str):
-        raise RuntimeError(f"Field '{field_name}.event_id' must be null or a string.")
-
+        raise RuntimeError(f"{context}.event_id must be null or string")
+    
     for key in ["title", "start", "end", "description"]:
         if not isinstance(event[key], str):
-            raise RuntimeError(f"Field '{field_name}.{key}' must be a string.")
+            raise RuntimeError(f"{context}.{key} must be string, got {type(event[key]).__name__}")
+    
+    return event
 
 
-def validate_llm_output(payload: object) -> dict[str, object]:
-    # Validate the JSON shape before calendar_interaction consumes it.
-    if not isinstance(payload, dict):
-        raise RuntimeError("LLM output must be a JSON object.")
-
-    required_top_level = [
-        "date",
-        "daily_summary",
-        "adjustment_principles",
-        "calendar_operations",
-        "optimized_schedule",
-    ]
-    for field_name in required_top_level:
-        if field_name not in payload:
-            raise RuntimeError(f"Missing required top-level field: {field_name}")
-
+def validate_json_structure(payload: dict) -> dict:
+    """Validate top-level JSON structure from LLM."""
+    required = ["date", "daily_summary", "adjustment_principles", "calendar_operations", "optimized_schedule"]
+    for field in required:
+        if field not in payload:
+            raise RuntimeError(f"Missing required field: {field}")
+    
     if not isinstance(payload["date"], str):
-        raise RuntimeError("Field 'date' must be a string.")
+        raise RuntimeError("Field 'date' must be string")
+    
     if not isinstance(payload["daily_summary"], str):
-        raise RuntimeError("Field 'daily_summary' must be a string.")
-
-    _validate_text_list(payload["adjustment_principles"], "adjustment_principles")
-
+        raise RuntimeError("Field 'daily_summary' must be string")
+    
+    if not isinstance(payload["adjustment_principles"], list):
+        raise RuntimeError("Field 'adjustment_principles' must be list")
+    
+    if not all(isinstance(item, str) for item in payload["adjustment_principles"]):
+        raise RuntimeError("All items in 'adjustment_principles' must be strings")
+    
     if not isinstance(payload["calendar_operations"], list):
-        raise RuntimeError("Field 'calendar_operations' must be a list.")
-
-    allowed_actions = {"move", "update_description", "no_update"}
-    for index, operation in enumerate(payload["calendar_operations"]):
-        if not isinstance(operation, dict):
-            raise RuntimeError(f"calendar_operations[{index}] must be an object.")
-        for field_name in ["action", "reason"]:
-            if field_name not in operation: 
-                raise RuntimeError(f"calendar_operations[{index}].{field_name} is required.")
-        if operation["action"] not in allowed_actions:
-            raise RuntimeError(
-                f"calendar_operations[{index}].action must be one of {sorted(allowed_actions)}."
-            )
-        if operation["action"] == "no_update":
-            if not isinstance(operation["reason"], str):
-                raise RuntimeError(f"calendar_operations[{index}].reason must be a string.")
-            continue
-
-        for field_name in ["target", "updated"]:
-            if field_name not in operation:
-                raise RuntimeError(f"calendar_operations[{index}].{field_name} is required.")
-        _validate_event_object(operation["target"], f"calendar_operations[{index}].target")
-        _validate_event_object(operation["updated"], f"calendar_operations[{index}].updated")
-        if not isinstance(operation["reason"], str):
-            raise RuntimeError(f"calendar_operations[{index}].reason must be a string.")
-
+        raise RuntimeError("Field 'calendar_operations' must be list")
+    
     if not isinstance(payload["optimized_schedule"], list):
-        raise RuntimeError("Field 'optimized_schedule' must be a list.")
-
-    for index, item in enumerate(payload["optimized_schedule"]):
-        _validate_event_object(item, f"optimized_schedule[{index}]")
-        for field_name in ["intensity", "movable"]:
-            if field_name not in item:
-                raise RuntimeError(f"optimized_schedule[{index}].{field_name} is required.")
-        if item["intensity"] not in {"low", "medium", "high"}:
-            raise RuntimeError(
-                f"optimized_schedule[{index}].intensity must be one of low, medium, high."
-            )
-        if not isinstance(item["movable"], bool):
-            raise RuntimeError(f"optimized_schedule[{index}].movable must be a boolean.")
-
+        raise RuntimeError("Field 'optimized_schedule' must be list")
+    
     return payload
 
 
-def validate_schedule_consistency(payload: dict[str, object], llm_input: LLMInput):
-    # Check that the final schedule can actually be applied back to the calendar safely.
-    optimized_schedule = payload["optimized_schedule"]
-    assert isinstance(optimized_schedule, list)
+def validate_calendar_operations(operations: list, llm_input: LLMInput) -> list:
+    """Validate calendar_operations array."""
+    original_events = [
+        {
+            "event_id": item.event_id,
+            "title": item.task,
+            "start": item.start,
+            "end": item.end,
+            "description": item.description,
+            "intensity": item.intensity,
+            "movable": item.movable,
+        }
+        for item in llm_input.schedule
+    ]
+    
+    if len(operations) != len(original_events):
+        raise RuntimeError(
+            f"calendar_operations must contain exactly {len(original_events)} items "
+            f"(one per original event), got {len(operations)}"
+        )
+    
+    allowed_actions = {"move", "update_description", "no_update"}
+    
+    for idx, (op, original) in enumerate(zip(operations, original_events)):
+        if not isinstance(op, dict):
+            raise RuntimeError(f"calendar_operations[{idx}] must be object, got {type(op).__name__}")
+        
+        if "action" not in op:
+            raise RuntimeError(f"calendar_operations[{idx}] missing 'action' field")
+        
+        if "reason" not in op:
+            raise RuntimeError(f"calendar_operations[{idx}] missing 'reason' field")
+        
+        action = op["action"]
+        if action not in allowed_actions:
+            raise RuntimeError(f"calendar_operations[{idx}] action '{action}' must be one of {allowed_actions}")
+        
+        if action == "no_update":
+            # For no_update, target and updated must match original if missing
+            if "target" not in op:
+                op["target"] = dict(original)
+            if "updated" not in op:
+                op["updated"] = dict(original)
+            # Ensure they are objects
+            if not isinstance(op["target"], dict):
+                op["target"] = dict(original)
+            if not isinstance(op["updated"], dict):
+                op["updated"] = dict(original)
+            continue
+        
+        # For move and update_description, both target and updated should be provided
+        # If LLM returned null, use original event as fallback
+        if "target" not in op or op["target"] is None:
+            print(f"[WARNING] calendar_operations[{idx}] (action={action}) 'target' is null, "
+                  f"using original event: {original['title']}")
+            op["target"] = dict(original)
+        
+        if "updated" not in op or op["updated"] is None:
+            print(f"[WARNING] calendar_operations[{idx}] (action={action}) 'updated' is null, "
+                  f"using original event: {original['title']}")
+            op["updated"] = dict(original)
+        
+        # Ensure target and updated are objects (fix if LLM returned non-dict types)
+        if not isinstance(op["target"], dict):
+            print(f"[WARNING] calendar_operations[{idx}].target is {type(op['target']).__name__}, "
+                  f"expected dict. Using original event instead")
+            op["target"] = dict(original)
+        
+        if not isinstance(op["updated"], dict):
+            print(f"[WARNING] calendar_operations[{idx}].updated is {type(op['updated']).__name__}, "
+                  f"expected dict. Using original event instead")
+            op["updated"] = dict(original)
+        
+        validate_event_object(op["target"], f"calendar_operations[{idx}].target")
+        validate_event_object(op["updated"], f"calendar_operations[{idx}].updated")
+    
+    # Final safety check: ensure no None values remain
+    for idx, op in enumerate(operations):
+        if op.get("target") is None:
+            raise RuntimeError(f"calendar_operations[{idx}].target is still null after validation")
+        if op.get("updated") is None:
+            raise RuntimeError(f"calendar_operations[{idx}].updated is still null after validation")
+    
+    return operations
 
-    original_schedule = llm_input.schedule
-    if len(optimized_schedule) != len(original_schedule):
-        raise RuntimeError("optimized_schedule must contain every original event exactly once.")
 
-    original_start_times = [_parse_hhmm(item.start, f"original_schedule[{index}].start") for index, item in enumerate(original_schedule)]
-    original_end_times = [_parse_hhmm(item.end, f"original_schedule[{index}].end") for index, item in enumerate(original_schedule)]
-    latest_original_end = max(original_end_times)
-
-    original_titles = sorted(item.task for item in original_schedule)
-    print(f"Original schedule titles: {original_titles}")
-    output_titles = sorted(item["title"] for item in optimized_schedule)
-    print(f"Optimized schedule titles: {output_titles}")
+def validate_optimized_schedule(schedule: list, llm_input: LLMInput) -> list:
+    """Validate optimized_schedule array."""
+    original_events = llm_input.schedule
+    
+    if len(schedule) != len(original_events):
+        raise RuntimeError(
+            f"optimized_schedule must contain exactly {len(original_events)} items, got {len(schedule)}"
+        )
+    
+    # Validate each item has required fields
+    for idx, item in enumerate(schedule):
+        validate_event_object(item, f"optimized_schedule[{idx}]")
+        
+        if "intensity" not in item or item["intensity"] not in {"low", "medium", "high"}:
+            raise RuntimeError(f"optimized_schedule[{idx}].intensity must be low/medium/high")
+        
+        if "movable" not in item or not isinstance(item["movable"], bool):
+            raise RuntimeError(f"optimized_schedule[{idx}].movable must be boolean")
+    
+    # Check all original events are present by title
+    original_titles = sorted(item.task for item in original_events)
+    output_titles = sorted(item["title"] for item in schedule)
     if original_titles != output_titles:
-        raise RuntimeError("optimized_schedule must contain the same events as the original schedule.")
-
-    previous_end = None
-    for index, item in enumerate(optimized_schedule):
-        assert isinstance(item, dict)
-        start_minutes = _parse_hhmm(item["start"], f"optimized_schedule[{index}].start")
-        end_minutes = _parse_hhmm(item["end"], f"optimized_schedule[{index}].end")
-        if end_minutes <= start_minutes:
-            raise RuntimeError(f"optimized_schedule[{index}] must end after it starts.")
-        if previous_end is not None and start_minutes < previous_end:
-            raise RuntimeError("optimized_schedule must not contain overlapping events.")
-        if end_minutes > latest_original_end:
-            raise RuntimeError("optimized_schedule must not extend beyond the original latest end time.")
-        previous_end = end_minutes
-
-    original_fixed = {
+        raise RuntimeError(
+            f"optimized_schedule must contain all original events. "
+            f"Expected: {original_titles}, got: {output_titles}"
+        )
+    
+    # Check for overlaps and valid times
+    sorted_items = sorted(schedule, key=lambda x: (parse_hhmm(x["start"]), parse_hhmm(x["end"])))
+    prev_end = None
+    
+    for idx, item in enumerate(sorted_items):
+        try:
+            start_min = parse_hhmm(item["start"])
+            end_min = parse_hhmm(item["end"])
+        except RuntimeError as e:
+            raise RuntimeError(f"optimized_schedule[{idx}]: {e}")
+        
+        if end_min <= start_min:
+            raise RuntimeError(f"optimized_schedule[{idx}]: end time must be after start time")
+        
+        if prev_end is not None and start_min < prev_end:
+            raise RuntimeError(f"optimized_schedule: overlapping events detected")
+        
+        prev_end = end_min
+    
+    # Check latest end time doesn't exceed original
+    original_end_times = [parse_hhmm(item.end) for item in original_events]
+    latest_original_end = max(original_end_times)
+    latest_output_end = max(parse_hhmm(item["end"]) for item in schedule)
+    
+    if latest_output_end > latest_original_end:
+        raise RuntimeError(
+            f"optimized_schedule must not extend beyond original latest end time "
+            f"({latest_original_end} minutes)"
+        )
+    
+    # Check fixed events weren't changed
+    fixed_events = {
         item.task: (item.start, item.end)
-        for item in original_schedule
+        for item in original_events
         if not item.movable
     }
-    for index, item in enumerate(optimized_schedule):
-        assert isinstance(item, dict)
-        key = item["title"]
-        if key in original_fixed:
-            original_start, original_end = original_fixed[key]
-            if item["start"] != original_start or item["end"] != original_end:
+    
+    for idx, item in enumerate(schedule):
+        title = item["title"]
+        if title in fixed_events:
+            orig_start, orig_end = fixed_events[title]
+            if item["start"] != orig_start or item["end"] != orig_end:
                 raise RuntimeError(
-                    f"optimized_schedule[{index}] changes a fixed event, which is not allowed."
+                    f"optimized_schedule[{idx}]: '{title}' is marked as fixed "
+                    f"but times were changed"
                 )
+    
+    return schedule
 
 
-def resolve_api_key(provider: str) -> str | None:
-    if provider.lower() != "qwen":
-        return None
+# ============================================================================
+# LLM API Call
+# ============================================================================
 
-    return (
+def resolve_api_key() -> str:
+    """Get Qwen API key from environment."""
+    api_key = (
         os.getenv("QWEN_API_KEY")
         or os.getenv("Qwen_API_KEY")
         or os.getenv("DASHSCOPE_API_KEY")
     )
+    if not api_key:
+        raise RuntimeError(
+            "Qwen API key not found. Set QWEN_API_KEY, Qwen_API_KEY, or DASHSCOPE_API_KEY."
+        )
+    return api_key
 
 
-def call_qwen_chat(
-    model: str,
+def call_llm(
     system_instruction: str,
     user_prompt: str,
     llm_input: LLMInput,
-) -> ScheduleRecommendation:
-    api_key = resolve_api_key("qwen")
-    if not api_key:
-        raise RuntimeError(
-            "Qwen API key not found. Set one of QWEN_API_KEY, Qwen_API_KEY, or DASHSCOPE_API_KEY."
-        )
-
+) -> dict:
+    """
+    Call Qwen LLM API with retry logic.
+    
+    Args:
+        system_instruction: System instruction text
+        user_prompt: Formatted user prompt
+        llm_input: Original LLMInput for validation context
+    
+    Returns:
+        Parsed JSON response from LLM
+        
+    Raises:
+        RuntimeError: If API call fails or response is invalid
+    """
+    api_key = resolve_api_key()
     base_url = os.getenv("QWEN_BASE_URL", DEFAULT_QWEN_BASE_URL).rstrip("/")
-    client = OpenAI(
-        api_key=api_key,
-        base_url=base_url,
-    )
-
+    
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    
     max_attempts = 3
-    retry_delay_seconds = 2
-    last_error: Exception | None = None
-
-    print(f"Qwen base URL: {base_url}")
-    print(f"Qwen model: {model}")
-
-    # Retry a few times because the DashScope-compatible endpoint has been intermittently closing connections.
+    retry_delay = 2
+    
+    print(f"[LLM] Calling {DEFAULT_PROVIDER} model '{DEFAULT_MODEL}' at {base_url}")
+    
+    last_error = None
     for attempt in range(1, max_attempts + 1):
         try:
             completion = client.chat.completions.create(
-                model=model,
+                model=DEFAULT_MODEL,
                 messages=[
                     {"role": "system", "content": system_instruction},
                     {"role": "user", "content": user_prompt},
@@ -424,146 +514,192 @@ def call_qwen_chat(
                 response_format={"type": "json_object"},
                 extra_body={"enable_thinking": False},
             )
-        except (APIConnectionError, OpenAIError) as exc:
-            last_error = exc
-            print(f"Qwen request attempt {attempt}/{max_attempts} failed: {exc}")
-            if attempt < max_attempts:
-                time.sleep(retry_delay_seconds)
-                continue
-            break
-
-        try:
+            
             message_content = completion.choices[0].message.content
-        except (AttributeError, IndexError) as exc:
-            raise RuntimeError("Qwen returned an unexpected completion payload.") from exc
-        except APIStatusError as exc:
-            body_preview = str(exc.body)[:500] if getattr(exc, "body", None) else "<empty>"
-            message = (
-                f"Qwen returned HTTP {exc.status_code} from base URL {base_url} "
-                f"for model '{model}'. Response body: {body_preview or '<empty>'}"
-            )
-            if exc.status_code < 500 or attempt == max_attempts:
-                raise RuntimeError(message)
-
-            print(f"{message}. Retrying...")
-            time.sleep(retry_delay_seconds)
-            continue
-        except OpenAIError as exc:
-            last_error = exc
-            print(f"Qwen stream attempt {attempt}/{max_attempts} failed: {exc}")
+            if not isinstance(message_content, str) or not message_content.strip():
+                raise RuntimeError("LLM returned empty response")
+            
+            # Parse JSON
+            try:
+                payload = json.loads(message_content)
+            except json.JSONDecodeError as e:
+                raise RuntimeError(f"LLM returned invalid JSON: {str(e)[:100]}")
+            
+            print(f"[LLM] ✓ Response received and parsed")
+            print(f"[LLM] Full response:\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
+            return payload
+            
+        except (APIConnectionError, APIStatusError, OpenAIError) as e:
+            last_error = e
+            error_msg = str(e)
+            if isinstance(e, APIStatusError):
+                error_msg = f"HTTP {e.status_code}: {error_msg[:200]}"
+            
+            print(f"[LLM] Attempt {attempt}/{max_attempts} failed: {error_msg}")
+            
             if attempt < max_attempts:
-                time.sleep(retry_delay_seconds)
+                time.sleep(retry_delay)
                 continue
             break
-
-        if not isinstance(message_content, str) or not message_content.strip():
-            last_error = RuntimeError(f"Qwen returned an empty JSON response for model '{model}'.")
-            print(f"Qwen response attempt {attempt}/{max_attempts} failed: {last_error}")
-            if attempt < max_attempts:
-                time.sleep(retry_delay_seconds)
-                continue
-            break
-
-        try:
-            parsed = json.loads(message_content)
-        except json.JSONDecodeError as exc:
-            last_error = RuntimeError(f"Qwen returned invalid JSON: {message_content}")
-            print(f"Qwen response attempt {attempt}/{max_attempts} failed: {last_error}")
-            if attempt < max_attempts:
-                time.sleep(retry_delay_seconds)
-                continue
-            raise last_error from exc
-
-        try:
-            return ScheduleRecommendation.from_dict(parsed)
-        except (KeyError, TypeError, ValueError) as exc:
-            last_error = RuntimeError(f"Qwen returned an incompatible payload: {exc}")
-            print(f"Qwen response attempt {attempt}/{max_attempts} failed parsing: {last_error}")
-            print(f"Full response content for debugging: {message_content}")
-            if attempt < max_attempts:
-                time.sleep(retry_delay_seconds)
-                continue
-            break
-
+    
     raise RuntimeError(
-        f"Qwen request failed after {max_attempts} attempts to base URL {base_url} for model '{model}': {last_error}"
+        f"LLM API call failed after {max_attempts} attempts: {last_error}"
     ) from last_error
 
 
-def main() -> int:
-    try:
-        llm_input = build_input_from_sensehat_mock(
-            provider=DEFAULT_PROVIDER,
-            model=DEFAULT_MODEL,
-            sleep_model_path=SLEEP_MODEL_PATH,
-        )
-    except Exception as exc:
-        print(f"Warning: failed to build input from sensehat mock pipeline ({exc}). Falling back to static mock input.")
-        llm_input = build_static_mock_input(provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL)
-
-    system_instruction = build_system_instruction(SYSTEM_TEMPLATE_PATH)
-    user_prompt = build_user_prompt(llm_input, USER_TEMPLATE_PATH)
-
-    if PRINT_STRUCTURED_INPUT:
-        print("Structured mock input:")
-        print(json.dumps(asdict(llm_input), indent=2, ensure_ascii=False))
-        print()
-
-    print("System instruction:")
-    print(system_instruction)
-    print()
-    print("User prompt:")
-    print(user_prompt)
-    print()
-
-    if not INVOKE_LLM:
-        print("LLM API calling is disabled. Set INVOKE_LLM = True to send the current mock input.")
-        return 0
-
-    if DEFAULT_PROVIDER.lower() != "qwen":
-        raise RuntimeError(f"Provider '{DEFAULT_PROVIDER}' is not implemented yet.")
-
-    print("LLM response:")
-    try:
-        llm_output = call_qwen_chat(
-            model=llm_input.model,
-            system_instruction=system_instruction,
-            user_prompt=user_prompt,
-            llm_input=llm_input,
-        )
-        print(json.dumps(llm_output.to_dict(), indent=2, ensure_ascii=False))
-    except RuntimeError as exc:
-        print(f"Qwen request failed: {exc}")
-        return 1
-    return 0
+# ============================================================================
+# Main Entry Points
+# ============================================================================
 
 def generate_schedule_recommendation(llm_input: LLMInput | None = None) -> ScheduleRecommendation:
+    """
+    Generate a schedule recommendation using the LLM.
+    
+    This is the main entry point from calendar-agent.py.
+    It expects llm_input to be fully constructed with:
+    - Current sleep assessment
+    - Environment conditions
+    - Original schedule
+    - User constraints
+    
+    Args:
+        llm_input: Complete LLMInput (if None, uses mock data for testing)
+    
+    Returns:
+        ScheduleRecommendation with optimized schedule and calendar operations
+        
+    Raises:
+        RuntimeError: If LLM call fails or output validation fails
+    """
+    # If no input provided, try to build from SenseHat or fall back to mock
     if llm_input is None:
         try:
-            llm_input = build_input_from_sensehat_mock(
-                provider=DEFAULT_PROVIDER,
-                model=DEFAULT_MODEL,
-                sleep_model_path=SLEEP_MODEL_PATH,
-            )
-        except Exception:
-            llm_input = build_static_mock_input(provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL)
+            llm_input = build_input_from_sensehat_mock(DEFAULT_PROVIDER, DEFAULT_MODEL)
+            print("[Input] Built from SenseHat sensor data")
+        except Exception as e:
+            print(f"[Input] Failed to build from SenseHat ({e}). Using mock data.")
+            llm_input = build_static_mock_input(DEFAULT_PROVIDER, DEFAULT_MODEL)
+    
+    # Build prompts
+    system_instruction = build_system_instruction()
+    user_prompt = build_user_prompt(llm_input)
+    
+    print(f"[Prompt] Generated for {llm_input.user_name} on {llm_input.schedule_date}")
+    
+    # Call LLM
+    llm_response = call_llm(system_instruction, user_prompt, llm_input)
+    
+    # Validate structure
+    try:
+        print("\n[Validation] Checking JSON structure...")
+        validate_json_structure(llm_response)
+        print("[Validation] ✓ JSON structure valid")
+        
+        print("[Validation] Checking calendar_operations...")
+        validate_calendar_operations(llm_response["calendar_operations"], llm_input)
+        print(f"[Validation] ✓ calendar_operations valid ({len(llm_response['calendar_operations'])} items)")
+        
+        print("[Validation] Checking optimized_schedule...")
+        validate_optimized_schedule(llm_response["optimized_schedule"], llm_input)
+        print(f"[Validation] ✓ optimized_schedule valid ({len(llm_response['optimized_schedule'])} items)")
+        
+    except RuntimeError as e:
+        print(f"\n[Validation] ✗ FAILED: {e}")
+        print(f"\n[Validation] Problem context:")
+        print(f"[Validation] LLM response was:\n{json.dumps(llm_response, indent=2, ensure_ascii=False)}")
+        raise
+    except Exception as e:
+        # Catch any other errors during validation
+        print(f"\n[Validation] ✗ UNEXPECTED ERROR: {type(e).__name__}: {e}")
+        print(f"\n[Validation] Full traceback:")
+        import traceback
+        traceback.print_exc()
+        print(f"\n[Validation] LLM response was:\n{json.dumps(llm_response, indent=2, ensure_ascii=False)}")
+        raise RuntimeError(f"Validation failed with {type(e).__name__}: {e}") from e
+    
+    print("\n[Validation] ✓ All checks passed")
+    
+    # Convert to ScheduleRecommendation
+    recommendation = ScheduleRecommendation.from_dict(llm_response)
+    return recommendation
 
-    system_instruction = build_system_instruction(SYSTEM_TEMPLATE_PATH)
-    user_prompt = build_user_prompt(llm_input, USER_TEMPLATE_PATH)
-    return call_qwen_chat(
-        model=llm_input.model,
-        system_instruction=system_instruction,
-        user_prompt=user_prompt,
-        llm_input=llm_input,
-    )
 
+# ============================================================================
+# Debug/Test Entry Point
+# ============================================================================
 
-def mock_pipeline():
-    # Mock pipeline for exporting to calendar-agent without running the full LLM interaction.
-    llm_input = build_static_mock_input(provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL)
-    system_instruction = build_system_instruction(SYSTEM_TEMPLATE_PATH)
-    user_prompt = build_user_prompt(llm_input, USER_TEMPLATE_PATH)
-    return system_instruction, user_prompt
+def main() -> int:
+    """
+    Standalone debug entry point for testing LLM interaction.
+    
+    This script allows testing the full LLM pipeline without running
+    the calendar-agent. Set environment variables:
+    - QWEN_API_KEY: Your Qwen API key
+    - LLM_MODEL: Qwen model (default: qwen3.6-plus)
+    
+    Returns:
+        0 on success, 1 on failure
+    """
+    print("=" * 70)
+    print("LLM Interaction Debug - Schedule Recommendation Pipeline")
+    print("=" * 70)
+    print()
+    
+    # Build input
+    try:
+        llm_input = build_input_from_sensehat_mock(DEFAULT_PROVIDER, DEFAULT_MODEL)
+        print("[Input] Built from SenseHat sensor data")
+    except Exception as e:
+        print(f"[Input] SenseHat not available ({e}), using mock data")
+        llm_input = build_static_mock_input(DEFAULT_PROVIDER, DEFAULT_MODEL)
+    
+    print()
+    print("Input structured data (LLMInput):")
+    print(json.dumps(asdict(llm_input), indent=2, ensure_ascii=False))
+    print()
+    
+    # Build prompts
+    system_instruction = build_system_instruction()
+    user_prompt = build_user_prompt(llm_input)
+    
+    print("-" * 70)
+    print("System Instruction:")
+    print("-" * 70)
+    print(system_instruction)
+    print()
+    
+    print("-" * 70)
+    print("User Prompt:")
+    print("-" * 70)
+    print(user_prompt)
+    print()
+    
+    # Call LLM
+    try:
+        print("=" * 70)
+        print("Calling LLM API...")
+        print("=" * 70)
+        print()
+        
+        recommendation = generate_schedule_recommendation(llm_input)
+        
+        print()
+        print("=" * 70)
+        print("Schedule Recommendation (ScheduleRecommendation):")
+        print("=" * 70)
+        print(json.dumps(recommendation.to_dict(), indent=2, ensure_ascii=False))
+        print()
+        
+        return 0
+        
+    except RuntimeError as e:
+        print()
+        print("=" * 70)
+        print(f"ERROR: {e}")
+        print("=" * 70)
+        return 1
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -21,6 +21,8 @@ Core rules:
 10. Do not create overlaps between events.
 11. Do not drop any original event from the final schedule.
 12. Do not extend the final end time beyond the latest end time in the original schedule.
+13. Every original event must appear exactly once in calendar_operations.
+14. For no_update entries, target and updated must both contain the original event data.
 
 Optimization priorities:
 1. Protect high-focus work from periods of lower expected alertness.
@@ -29,8 +31,8 @@ Optimization priorities:
 4. Preserve continuity where possible so the revised plan still feels familiar.
 
 Output requirements:
-1. Return exactly one JSON object and no markdown, no prose outside JSON, and no code fences.
-2. Use exactly these top-level fields:
+1. Return EXACTLY ONE JSON object and NOTHING ELSE. No markdown, no prose, no code fences, no extra text.
+2. Use exactly these top-level fields (ALL 5 REQUIRED):
    - date
    - daily_summary
    - adjustment_principles
@@ -38,34 +40,39 @@ Output requirements:
    - optimized_schedule
 3. The date field must be a string in YYYY-MM-DD format.
 4. The daily_summary field must be a short string.
-5. The adjustment_principles field must be an array of short strings.
-6. The calendar_operations field must be an array containing only the events that actually changed.
-7. Each calendar_operations item must have:
-   - action
-   - target
-   - updated
-   - reason
-8. Allowed action values are:
-   - move
-   - update_description
-   - no_update
-9. Use "no_update" for action in calendar_operations when there is no change needed for the current calendar.
-10. Both target and updated must be objects with exactly these fields:
-   - event_id
-   - title
-   - start
-   - end
-   - description
-11. Use null for event_id when no event ID is available.
-12. The optimized_schedule field must contain the full final schedule, with every original event appearing exactly once.
-13. Each optimized_schedule item must contain:
-   - event_id
-   - title
-   - start
-   - end
-   - description
-   - intensity
-   - movable
-14. Use HH:MM format for start and end times.
-15. Preserve fixed events in both calendar_operations and optimized_schedule.
-16. The optimized_schedule must have no overlaps, no missing events, and no extension beyond the original schedule boundary.
+5. The adjustment_principles field must be an array of short strings (minimum 2, maximum 5).
+6. The calendar_operations field MUST contain EXACTLY ONE ENTRY FOR EVERY ORIGINAL EVENT in the input schedule. Each entry describes how that event should be handled.
+7. Each calendar_operations item must have exactly these fields:
+   - action (string: "move", "update_description", or "no_update")
+   - target (object: the original event data)
+   - updated (object: the modified or unchanged event data)
+   - reason (string: brief explanation)
+8. Allowed action values:
+   - "move": event is rescheduled to a new time
+   - "update_description": event's description is updated but time remains same
+   - "no_update": event remains exactly as it was
+9. For NO_UPDATE entries: target and updated are IDENTICAL COPIES of the original event.
+10. For MOVE entries: target is original event, updated has new times but same event_id, title, description.
+11. For UPDATE_DESCRIPTION entries: target is original event, updated has new description but same times.
+12. Each target and updated object MUST have these exact fields:
+    - event_id (string or null)
+    - title (string)
+    - start (string in HH:MM format)
+    - end (string in HH:MM format)
+    - description (string)
+13. The optimized_schedule field MUST contain the complete final schedule with ALL original events arranged chronologically.
+14. Each optimized_schedule item must have exactly these fields:
+    - event_id (string or null)
+    - title (string)
+    - start (string in HH:MM format)
+    - end (string in HH:MM format)
+    - description (string)
+    - intensity (string: "low", "medium", or "high")
+    - movable (boolean)
+15. Critical constraints:
+    - calendar_operations.length must equal original schedule length
+    - optimized_schedule.length must equal original schedule length
+    - optimized_schedule must contain no overlapping events
+    - optimized_schedule must preserve all original events (by title match)
+    - optimized_schedule may NOT extend beyond the original schedule's latest end time
+    - Fixed events (movable=false) must appear at the same time in optimized_schedule as in the original

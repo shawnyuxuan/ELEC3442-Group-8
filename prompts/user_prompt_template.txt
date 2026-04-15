@@ -34,5 +34,35 @@ Return one JSON object only. The JSON must contain:
 - calendar_operations
 - optimized_schedule
 
-Use calendar_operations only for changed events.
-Use optimized_schedule for the full final schedule.
+CRITICAL INSTRUCTION FOR calendar_operations:
+1. Create exactly one calendar_operations entry for each original event
+2. Maintain the SAME ORDER as the original schedule
+3. For EVERY entry, BOTH target and updated MUST be provided (never null)
+4. For no_update entries:
+   - target = copy of original event data
+   - updated = copy of original event data
+   - reason = explanation why no change is needed
+5. For move and update_description entries:
+   - target = original event data (event_id, title, start, end, description)
+   - updated = modified event data with new times/descriptions
+   - reason = explanation of the change
+6. Each target/updated object must include: event_id, title, start, end, description
+7. Match calendar_operations entries to optimized_schedule by title and original times
+
+Example calendar_operations structure:
+[
+  {{
+    "action": "no_update",
+    "target": {{"event_id": "...", "title": "Morning Meeting", "start": "09:00", "end": "10:00", "description": "..."}},
+    "updated": {{"event_id": "...", "title": "Morning Meeting", "start": "09:00", "end": "10:00", "description": "..."}},
+    "reason": "Fixed event cannot be moved"
+  }},
+  {{
+    "action": "move",
+    "target": {{"event_id": "...", "title": "Deep Work", "start": "10:00", "end": "12:00", "description": "..."}},
+    "updated": {{"event_id": "...", "title": "Deep Work", "start": "14:00", "end": "16:00", "description": "..."}},
+    "reason": "Moved to afternoon for better focus"
+  }}
+]
+
+Use optimized_schedule for the full final schedule in chronological order.

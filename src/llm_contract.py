@@ -13,15 +13,23 @@ class CalendarEventData:
 
     @classmethod
     def from_dict(cls, payload: dict):
-        return cls(
-            event_id=payload.get("event_id"),
-            title=str(payload["title"]),
-            start=str(payload["start"]),
-            end=str(payload["end"]),
-            description=str(payload["description"]),
-            intensity=payload.get("intensity"),
-            movable=payload.get("movable"),
-        )
+        try:
+            required_fields = ["event_id", "title", "start", "end", "description"]
+            for field in required_fields:
+                if field not in payload:
+                    raise ValueError(f"Missing required field: '{field}'")
+            
+            return cls(
+                event_id=payload.get("event_id"),
+                title=str(payload["title"]),
+                start=str(payload["start"]),
+                end=str(payload["end"]),
+                description=str(payload["description"]),
+                intensity=payload.get("intensity"),
+                movable=payload.get("movable"),
+            )
+        except Exception as e:
+            raise ValueError(f"Error parsing CalendarEventData: {e}") from e
 
     def to_dict(self):
         return asdict(self)
@@ -36,20 +44,38 @@ class CalendarOperation:
 
     @classmethod
     def from_dict(cls, payload: dict):
-        return cls(
-            action=str(payload["action"]),
-            target=(
-                CalendarEventData.from_dict(payload["target"])
-                if payload.get("target") is not None
-                else None
-            ),
-            updated=(
-                CalendarEventData.from_dict(payload["updated"])
-                if payload.get("updated") is not None
-                else None
-            ),
-            reason=str(payload["reason"]),
-        )
+        try:
+            target_payload = payload.get("target")
+            updated_payload = payload.get("updated")
+            
+            # Validate required fields
+            if "action" not in payload:
+                raise ValueError("Missing 'action' field in calendar_operations")
+            if "reason" not in payload:
+                raise ValueError("Missing 'reason' field in calendar_operations")
+            
+            # Create CalendarEventData objects
+            target = None
+            updated = None
+            
+            if target_payload is not None:
+                if not isinstance(target_payload, dict):
+                    raise ValueError(f"'target' must be a dict or null, got {type(target_payload).__name__}")
+                target = CalendarEventData.from_dict(target_payload)
+            
+            if updated_payload is not None:
+                if not isinstance(updated_payload, dict):
+                    raise ValueError(f"'updated' must be a dict or null, got {type(updated_payload).__name__}")
+                updated = CalendarEventData.from_dict(updated_payload)
+            
+            return cls(
+                action=str(payload["action"]),
+                target=target,
+                updated=updated,
+                reason=str(payload["reason"]),
+            )
+        except Exception as e:
+            raise ValueError(f"Error parsing calendar_operations: {e}") from e
 
     def to_dict(self):
         return {
