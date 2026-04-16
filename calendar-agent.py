@@ -375,7 +375,11 @@ def calendar_worker(calendar_ops_queue: queue.Queue, stop_event: threading.Event
             # Log preflight results
             for result, operation in zip(preflight_results, recommendation.calendar_operations):
                 status = result["status"]
-                status_icon = "✓" if status == "ok" else "~" if status == "no_update" else "✗"
+                match status:
+                    case "target": status_icon = "✓"
+                    case "updated": status_icon = "~"
+                    case "no_update": status_icon = "~"
+                    case _: status_icon = "✗"
                 log(thread_name, f"   {status_icon} [{status}] {format_operation_label(operation)}")
 
             # Apply each operation with retry logic
@@ -399,14 +403,24 @@ def calendar_worker(calendar_ops_queue: queue.Queue, stop_event: threading.Event
                         active_controller.apply_calendar_operation(date_start, operation)
                         
                         # Collect inverse operation for potential rollback
-                        if preflight_status == "created" or preflight_status == "modified":
-                            inverse_op = preflight_results[idx].get("inverse_operation")
-                            if inverse_op:
-                                inverse_ops.append(inverse_op)
+                        match preflight_status:
+                            case "target":
+                                inverse_op = preflight_results[idx].get("inverse_operation")
+                                if inverse_op:
+                                        inverse_ops.append(inverse_op)
+                                applied_count += 1
+                                log(thread_name, f"   ✓ Applied: {op_label}")
+                                break
+                            case "no_update":
+                                skipped_count += 1
+                                continue
+                            case "updated":
+                                applied_count += 1
+                                break
+                            case _:
+                                log(f"Unknown preflight status '{preflight_status}' for operation: {op_label}. Retrial {attempt}/3")
+                                continue                        
                         
-                        applied_count += 1
-                        log(thread_name, f"   ✓ Applied: {op_label}")
-                        break
                         
                     except Exception as exc:
                         controller = None
