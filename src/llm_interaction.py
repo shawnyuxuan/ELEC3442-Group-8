@@ -523,14 +523,15 @@ def call_llm(
     
     max_attempts = 3
     retry_delay = 2
+    model_name = getattr(llm_input, "model", None) or DEFAULT_MODEL
     
-    print(f"[LLM] Calling {DEFAULT_PROVIDER} model '{DEFAULT_MODEL}' at {base_url}")
+    print(f"[LLM] Calling {DEFAULT_PROVIDER} model '{model_name}' at {base_url}")
     
     last_error = None
     for attempt in range(1, max_attempts + 1):
         try:
             completion = client.chat.completions.create(
-                model=DEFAULT_MODEL,
+                model=model_name,
                 messages=[
                     {"role": "system", "content": system_instruction},
                     {"role": "user", "content": user_prompt},
