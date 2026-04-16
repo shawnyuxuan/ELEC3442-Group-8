@@ -55,18 +55,18 @@ Output requirements:
    - "move": event is rescheduled to a new time
    - "update_description": event's description is updated but time remains same
    - "no_update": event remains exactly as it was
-9. For NO_UPDATE entries: target and updated are IDENTICAL COPIES of the original event.
-10. For MOVE entries: target is original event, updated has new times but same event_id, title, description.
-11. For UPDATE_DESCRIPTION entries: target is original event, updated has new description but same times.
-12. CRITICAL: target and updated MUST ALWAYS BE COMPLETE OBJECTS, not strings, not abbreviated, not null.
-13. Each target and updated object MUST have these exact fields:
+10. For NO_UPDATE entries: target and updated are IDENTICAL COPIES of the original event.
+11. For MOVE entries: target is original event, updated has new times but same event_id, title, description.
+12. For UPDATE_DESCRIPTION entries: target is original event, updated has new description but same times.
+13. CRITICAL: target and updated MUST ALWAYS BE COMPLETE OBJECTS, not strings, not abbreviated, not null.
+14. Each target and updated object MUST have these exact fields:
     - event_id (string or null)
     - title (string)
     - start (string in HH:MM format)
     - end (string in HH:MM format)
     - description (string)
-13. The optimized_schedule field MUST contain the complete final schedule with ALL original events arranged chronologically.
-14. Each optimized_schedule item must have exactly these fields:
+15. The optimized_schedule field MUST contain the complete final schedule with ALL original events arranged chronologically.
+16. Each optimized_schedule item must have exactly these fields:
     - event_id (string or null)
     - title (string)
     - start (string in HH:MM format)
@@ -74,7 +74,7 @@ Output requirements:
     - description (string)
     - intensity (string: "low", "medium", or "high")
     - movable (boolean)
-15. Critical constraints:
+17. Critical constraints:
     - calendar_operations.length must equal original schedule length
     - optimized_schedule.length must equal original schedule length
     - optimized_schedule must contain no overlapping events
@@ -242,4 +242,3 @@ CRITICAL REQUIREMENTS FOR YOUR RESPONSE:
 5. NEVER omit or skip the optimized_schedule field
 6. All event objects must include: event_id, title, start, end, description, and (for optimized_schedule) intensity and movable
 7. Return ONLY the JSON object - no markdown, no explanation, no extra text
-

@@ -523,14 +523,15 @@ def call_llm(
     
     max_attempts = 3
     retry_delay = 2
+    model_name = getattr(llm_input, "model", None) or DEFAULT_MODEL
     
-    print(f"[LLM] Calling {DEFAULT_PROVIDER} model '{DEFAULT_MODEL}' at {base_url}")
+    print(f"[LLM] Calling {DEFAULT_PROVIDER} model '{model_name}' at {base_url}")
     
     last_error = None
     for attempt in range(1, max_attempts + 1):
         try:
             completion = client.chat.completions.create(
-                model=DEFAULT_MODEL,
+                model=model_name,
                 messages=[
                     {"role": "system", "content": system_instruction},
                     {"role": "user", "content": user_prompt},
@@ -550,7 +551,14 @@ def call_llm(
                 raise RuntimeError(f"LLM returned invalid JSON: {str(e)[:100]}")
             
             print(f"[LLM] ✓ Response received and parsed")
-            print(f"[LLM] Full response:\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
+            if isinstance(payload, dict):
+                top_level_keys = sorted(payload.keys())
+                print(
+                    f"[LLM] Response summary: top_level_key_count={len(top_level_keys)}, "
+                    f"top_level_keys={top_level_keys}"
+                )
+            else:
+                print(f"[LLM] Response summary: payload_type={type(payload).__name__}")
             return payload
             
         except (APIConnectionError, APIStatusError, OpenAIError) as e:
