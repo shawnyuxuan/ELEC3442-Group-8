@@ -18,7 +18,12 @@ def schedule_item_from_calendar_event(event) -> ScheduleItem:
     title = str(vevent.summary.value)
     start = vevent.dtstart.value.strftime("%H:%M")
     end = vevent.dtend.value.strftime("%H:%M")
-    description = str(getattr(vevent, "description", None).value) if hasattr(vevent, "description") else ""
+    description_prop = getattr(vevent, "description", None)
+    description = (
+        str(description_prop.value)
+        if description_prop is not None and getattr(description_prop, "value", None) is not None
+        else ""
+    )
 
     return ScheduleItem(
         str(event.url),
