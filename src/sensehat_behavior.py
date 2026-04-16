@@ -12,12 +12,60 @@ DEFAULT_MODEL_CANDIDATES = [
     "local_model.pkl",
 ]
 DEFAULT_MOCK_SCHEDULE = [
-    {"start": "09:00", "end": "10:00", "task": "Team Meeting", "intensity": "medium", "movable": False},
-    {"start": "10:00", "end": "12:00", "task": "Deep Work Session", "intensity": "high", "movable": True},
-    {"start": "12:00", "end": "13:00", "task": "Lunch Break", "intensity": "low", "movable": False},
-    {"start": "13:00", "end": "15:00", "task": "Project A", "intensity": "high", "movable": True},
-    {"start": "15:00", "end": "16:00", "task": "Project B", "intensity": "medium", "movable": True},
-    {"start": "16:00", "end": "17:00", "task": "Wrap-up and Planning for Tomorrow", "intensity": "low", "movable": True},
+    {
+        "event_id": None,
+        "start": "09:00",
+        "end": "10:00",
+        "task": "Team Meeting",
+        "description": "Weekly team sync covering priorities, blockers, and coordination.",
+        "intensity": "medium",
+        "movable": False,
+    },
+    {
+        "event_id": None,
+        "start": "10:00",
+        "end": "12:00",
+        "task": "Deep Work Session",
+        "description": "Focused individual work requiring sustained concentration and minimal interruptions.",
+        "intensity": "high",
+        "movable": True,
+    },
+    {
+        "event_id": None,
+        "start": "12:00",
+        "end": "13:00",
+        "task": "Lunch Break",
+        "description": "Midday meal and recovery break.",
+        "intensity": "low",
+        "movable": False,
+    },
+    {
+        "event_id": None,
+        "start": "13:00",
+        "end": "15:00",
+        "task": "Project A",
+        "description": "High-priority project execution block with deliverable progress expected.",
+        "intensity": "high",
+        "movable": True,
+    },
+    {
+        "event_id": None,
+        "start": "15:00",
+        "end": "16:00",
+        "task": "Project B",
+        "description": "Medium-intensity project work such as follow-ups, implementation, or coordination.",
+        "intensity": "medium",
+        "movable": True,
+    },
+    {
+        "event_id": None,
+        "start": "16:00",
+        "end": "17:00",
+        "task": "Wrap-up and Planning for Tomorrow",
+        "description": "Admin wrap-up, status notes, and planning for the next day.",
+        "intensity": "low",
+        "movable": True,
+    },
 ]
 # This keeps the local clustering model and the LLM layer aligned on what each cluster means.
 CLUSTER_PROFILES = {
@@ -122,6 +170,7 @@ class Sensor:
             return 20.0
         try:
             temperature = self.sense.get_temperature()
+            print(f"Temperature reading: {temperature:.1f}°C")
         except Exception as e:
             print(f"Error reading temperature: {e}. Using default value of 20.0°C.")
             temperature = 20.0
@@ -132,6 +181,7 @@ class Sensor:
             return 60.0
         try:
             humidity = self.sense.get_humidity()
+            print(f"Humidity reading: {humidity:.1f}%")
         except Exception as e:
             print(f"Error reading humidity: {e}. Using default value of 60.0%.")
             humidity = 60.0
@@ -142,6 +192,7 @@ class Sensor:
             return 1013.25
         try:
             pressure = self.sense.get_pressure()
+            print(f"Pressure reading: {pressure:.1f} hPa")
         except Exception as e:
             print(f"Error reading pressure: {e}. Using default value of 1013.25 hPa.")
             pressure = 1013.25
@@ -242,6 +293,7 @@ class SenseHatController:
                     G, W, W, W, W, W, W, G,
                     W, G, G, W, W, G, G, W,
                     W, W, G, G, G, G, W, W,
+                    W, W, W, W, W, W, W, W,
                 ]
             case 1:
                 # A frown :(
@@ -253,6 +305,7 @@ class SenseHatController:
                     W, W, Y, Y, Y, Y, W, W,
                     W, Y, Y, W, W, Y, Y, W,
                     Y, W, W, W, W, W, W, Y,
+                    W, W, W, W, W, W, W, W,
                 ]
             case 2:
                 # A neutral face :|
@@ -264,6 +317,7 @@ class SenseHatController:
                     W, W, W, W, W, W, W, W,
                     W, R, R, R, R, R, R, W,
                     W, R, R, R, R, R, R, W,
+                    W, W, W, W, W, W, W, W,
                 ]
             case _:
                 pixels = [W] * 64
