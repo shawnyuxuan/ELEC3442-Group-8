@@ -407,7 +407,7 @@ def calendar_worker(calendar_ops_queue: queue.Queue, stop_event: threading.Event
                             case "target":
                                 inverse_op = preflight_results[idx].get("inverse_operation")
                                 if inverse_op:
-                                        inverse_ops.append(inverse_op)
+                                    inverse_ops.append(inverse_op)
                                 applied_count += 1
                                 log(thread_name, f"   ✓ Applied: {op_label}")
                                 break
@@ -418,7 +418,7 @@ def calendar_worker(calendar_ops_queue: queue.Queue, stop_event: threading.Event
                                 applied_count += 1
                                 break
                             case _:
-                                log(f"Unknown preflight status '{preflight_status}' for operation: {op_label}. Retrial {attempt}/3")
+                                log(thread_name, f"Unknown preflight status '{preflight_status}' for operation: {op_label}. Retrial {attempt}/3")
                                 continue                        
                         
                         
