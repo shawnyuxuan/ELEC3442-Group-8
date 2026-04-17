@@ -429,6 +429,10 @@ def validate_optimized_schedule(schedule: list, llm_input: LLMInput) -> list:
             f"Expected: {original_titles}, got: {output_titles}"
         )
     
+    if not original_events:
+        # No original schedule to compare against; nothing else to validate.
+        return schedule
+    
     # Check for overlaps and valid times
     sorted_items = sorted(schedule, key=lambda x: (parse_hhmm(x["start"]), parse_hhmm(x["end"])))
     prev_end = None

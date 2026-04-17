@@ -20,7 +20,7 @@ Core rules:
 9. Return the answer in the user's requested language.
 10. Do not create overlaps between events.
 11. Do not drop any original event from the final schedule.
-12. Do not extend the final end time beyond the latest end time in the original schedule.
+12. STRICT: Do not extend the final end time beyond the latest end time in the original schedule. The schedule's final boundary is IMMUTABLE and CANNOT be moved later.
 13. Every original event must appear exactly once in calendar_operations.
 14. For no_update entries, target and updated must both contain the original event data.
 
@@ -79,7 +79,8 @@ Output requirements:
     - optimized_schedule.length must equal original schedule length
     - optimized_schedule must contain no overlapping events
     - optimized_schedule must preserve all original events (by title match)
-    - optimized_schedule may NOT extend beyond the original schedule's latest end time
+    - MANDATORY: optimized_schedule may NEVER extend beyond the original schedule's latest end time
+    - This is a hard constraint: every event must end on-or-before the original latest end time
     - Fixed events (movable=false) must appear at the same time in optimized_schedule as in the original
 
 COMPLETE JSON OUTPUT EXAMPLE:
