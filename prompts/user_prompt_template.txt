@@ -31,6 +31,11 @@ Constraints:
 - Do not overlap events.
 - Keep every original event exactly once in the final schedule.
 
+CRITICAL TIME BOUNDARY:
+The latest end time in the original schedule is IMMUTABLE.
+Any event in optimized_schedule MUST end at or before this time.
+You are NOT ALLOWED to extend the schedule day beyond its original boundary.
+
 Return one JSON object only. The JSON must contain:
 - date
 - daily_summary
@@ -61,4 +66,23 @@ CRITICAL INSTRUCTION FOR calendar_operations:
    - ❌ "target": {{"title": "..."}} (incomplete - WRONG)
    - ✓ "target": {{"event_id": null, "title": "Morning Meeting", "start": "09:00", "end": "10:00", "description": "..."}} (complete and correct)
 9. Use the EVENT REFERENCE TABLE above as a template - simply copy the JSON objects and modify only the necessary fields
+
+CRITICAL INSTRUCTION FOR optimized_schedule:
+1. Each item in optimized_schedule MUST have these exact fields:
+   - event_id, title, start, end, description, intensity, movable
+2. STRICT TIME BOUNDARY RULE:
+   - Calculate the latest end time from the original schedule (the maximum end time across all events)
+   - NO EVENT in optimized_schedule may end AFTER this time
+   - If the original schedule ends at 15:00, you MUST arrange all events to fit within 15:00
+   - You CANNOT move events to extend the day beyond 15:00
+3. Arrange events chronologically (sorted by start time)
+4. Do NOT overlap any events
+5. Include ALL original events exactly once (by title match)
+6. Respect fixed events (movable=false) - they MUST keep their original times unchanged
+7. When moving movable events:
+   - Consider the user's sleep quality and recommended work style
+   - Avoid placing high-intensity work immediately after low-intensity work if possible
+   - Consolidate similar intensity levels
+   - Leave buffer time between intensive tasks
+8. Validate: optimized_schedule end times MUST satisfy: max(all end times) <= original schedule's latest end time
 
