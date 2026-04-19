@@ -113,6 +113,7 @@ def is_raspberry_pi():
 
 
 if is_raspberry_pi():
+    print("[Sense Hat] Raspberry Pi environment confirmed. Importing sense_hat module")
     from sense_hat import SenseHat
 else:
     try:
@@ -167,6 +168,7 @@ class Sensor:
         
     def get_temperature(self):
         if self.sense is None:
+            print("[Temperature] Sensor is a none object. Why?")
             return 20.0
         try:
             temperature = self.sense.get_temperature()
@@ -178,6 +180,7 @@ class Sensor:
     
     def get_humidity(self):
         if self.sense is None:
+            print("[Humidity] Sensor is a none object. Why?")
             return 60.0
         try:
             humidity = self.sense.get_humidity()
@@ -189,6 +192,7 @@ class Sensor:
     
     def get_pressure(self):
         if self.sense is None:
+            print("[Pressure] Sensor is a none object. Why?")
             return 1013.25
         try:
             pressure = self.sense.get_pressure()
@@ -316,7 +320,7 @@ class SenseHatController:
                     W, W, W, W, W, W, W, W,
                     W, W, W, W, W, W, W, W,
                     W, R, R, R, R, R, R, W,
-                    W, R, R, R, R, R, R, W,
+                    W, W, W, W, W, W, W, W,
                     W, W, W, W, W, W, W, W,
                 ]
             case _:

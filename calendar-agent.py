@@ -152,6 +152,7 @@ def llm_worker(
         if force_refresh or sensehat_controller is None:
             model_path = os.getenv("SLEEP_MODEL_PATH")
             sensehat_controller = SenseHatController(model_path=model_path)
+        print(sensehat_controller.__class__)
         return sensehat_controller
 
     while True:
@@ -207,6 +208,7 @@ def llm_worker(
                 "pressure_hpa": float(sensehat_ctl.sensor.get_pressure()),
             }
             
+            print(environment_data)
             # Read calendar events for today
             schedule_items = build_schedule_from_calendar(calendar_name, date_text)
             
