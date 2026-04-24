@@ -1,9 +1,11 @@
-from speech_to_text import VoiceAssistant
+from src.speech_to_text import VoiceAssistant
+import os
 
 assistant = VoiceAssistant(
-    model_path = "/home/tamim/Desktop/ELEC3442-Group-8/vosk-model-small-en-us-0.15",
-    enable_tts = False
-    )
+    model_path = os.path.join(os.getcwd(), "vosk-model-small-en-us-0.15"),
+    enable_tts = False,
+    is_local = False
+)
 
-text = assistant.listen(seconds=3)
+text = assistant.listen(seconds=10)
 print("Final text:", text)
