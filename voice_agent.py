@@ -1,0 +1,161 @@
+import speech_recognition as sr
+import requests
+import pyttsx3
+import argparse
+import sys
+import os
+import threading
+import queue
+from flask import Flask, request, jsonify
+from src.speech_to_text import VoiceAssistant
+
+app = Flask(__name__)
+
+# Queue for handling TTS requests so they don't block the API
+tts_queue = queue.Queue()
+
+# Global config
+SERVER_URL = "http://192.168.1.100:5888/voice"
+ENGINE = None
+
+def check_microphone():
+    """Ensure a microphone is available for SpeechRecognition."""
+    try:
+        mics = sr.Microphone.list_microphone_names()
+        if not mics:
+            print("No microphones detected!")
+            return False
+        return True
+    except Exception as e:
+        print(f"Error accessing microphone: {e}")
+        return False
+
+def tts_worker(engine):
+    """Worker thread that consumes texts from the queue and speaks them out loud."""
+    print("[TTS Worker] Started")
+    while True:
+        text = tts_queue.get()
+        if text is None:
+            break
+        print(f"\n[TTS Playing]: {text}")
+        if engine:
+            try:
+                engine.say(text)
+                engine.runAndWait()
+            except Exception as e:
+                print(f"[TTS Error] {e}")
+                # Fallback to espeak
+                os.system(f'espeak "{text}"')
+        else:
+            # Fallback to espeak
+            os.system(f'espeak "{text}"')
+        tts_queue.task_done()
+
+@app.route('/speak', methods=['POST'])
+def handle_speak_request():
+    """Endpoint for Pi 1 to trigger speech on Pi 2."""
+    payload = request.get_json(silent=True)
+    if not payload or "text" not in payload:
+        return jsonify({"status": "error", "message": "Missing 'text' in payload"}), 400
+        
+    text = payload["text"]
+    tts_queue.put(text)
+    return jsonify({"status": "queued"}), 202
+
+def mic_worker_thread(server_url):
+    """
+    Background worker that continuously listens for the wake word using VoiceAssistant,
+    then captures a command and sends it to the main Pi 1 server.
+    """
+    print("[Mic Worker] Started listening for wake words...")
+    wake_words = tuple(token.strip().lower() for token in os.getenv("VOICE_WAKE_WORDS", "hey calendar").split(",") if token.strip())
+    
+    is_local_stt = os.getenv("VOICE_STT_LOCAL", "false").lower() == "true"
+    language = os.getenv("VOICE_LANGUAGE", "en-US")
+    model_path = os.getenv("VOICE_MODEL_PATH", os.path.join(os.getcwd(), "vosk-model-small-en-us-0.15"))
+    trigger_seconds = max(1, int(os.getenv("VOICE_TRIGGER_LISTEN_SECONDS", "2")))
+    command_seconds = max(2, int(os.getenv("VOICE_COMMAND_LISTEN_SECONDS", "8")))
+    timeout_threshold = max(1, int(os.getenv("VOICE_TIMEOUT_THRESHOLD", "5")))
+
+    try:
+        assistant = VoiceAssistant(
+            model_path=model_path,
+            enable_tts=False,
+            is_local=is_local_stt,
+            language=language,
+        )
+    except Exception as exc:
+        print(f"[Mic Worker] failed to initialize microphone listener: {exc}")
+        return
+
+    print(f"[Mic Worker] listening for wake words: {wake_words}")
+
+    def on_feedback_captured(payload: dict):
+        transcript = payload.get("transcript", "")
+        print(f"[Mic Worker] Sending payload to {server_url}: {transcript}")
+        try:
+            response = requests.post(server_url, json={"text": transcript}, timeout=20)
+            if response.status_code == 200:
+                data = response.json()
+                response_text = data.get("response")
+                if response_text:
+                    tts_queue.put(response_text)
+            else:
+                print(f"[Mic Worker] Server error: {response.status_code} - {response.text}")
+        except requests.exceptions.RequestException as e:
+            print(f"[Mic Worker] Connection failed: {e}")
+
+    # Listen loop
+    while True:
+        heard = assistant.listen(seconds=trigger_seconds, timeout_threshold=timeout_threshold)
+        normalized = heard.strip().lower()
+        if not normalized:
+            continue
+
+        if not any(wake_word in normalized for wake_word in wake_words):
+            continue
+
+        print(f"\n[Mic Worker] Wake word detected: '{heard}'. Listening for command...")
+        # Play a soft acknowledgement or simply start listening for command
+        # tts_queue.put("I'm listening.")
+        
+        payload = assistant.listen_and_serialize_feedback(
+            seconds=command_seconds,
+            timeout_threshold=timeout_threshold,
+            date="today", # Simplified, could be replaced if needed
+            source="microphone-wake-word",
+            context={"wake_word": heard},
+            on_feedback=on_feedback_captured,
+        )
+
+def main():
+    global SERVER_URL, ENGINE
+    
+    parser = argparse.ArgumentParser(description="Voice Agent (Pi 2) - Two-Way Pipeline")
+    parser.add_argument("--server", default="http://192.168.1.100:5888/voice", help="Pi 1 Server Voice URL")
+    parser.add_argument("--port", type=int, default=5890, help="Local port for the TTS API")
+    args = parser.parse_args()
+    
+    SERVER_URL = args.server
+    
+    # Initialize TTS engine
+    try:
+        ENGINE = pyttsx3.init()
+        ENGINE.setProperty("rate", 150)
+    except Exception as e:
+        print(f"Warning: pyttsx3 initialization failed: {e}. Will fallback to espeak.")
+
+    # Start TTS worker thread
+    threading.Thread(target=tts_worker, args=(ENGINE,), daemon=True).start()
+
+    # Start Mic STT worker thread if mic is available
+    if check_microphone():
+        threading.Thread(target=mic_worker_thread, args=(SERVER_URL,), daemon=True).start()
+    else:
+        print("Starting without microphone. (TTS-only node)")
+
+    # Run the Flask API
+    app.run(host="0.0.0.0", port=args.port, threaded=True)
+
+if __name__ == "__main__":
+    main()

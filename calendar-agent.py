@@ -14,12 +14,14 @@ import datetime
 import math
 import os
 import re
+import multiprocessing
 import traceback
 import pandas as pd
 import queue
 import signal
 import threading
 import time
+import requests
 from typing import Any
 
 from src.calendar_interaction import CalendarController, DEFAULT_CALENDAR_NAME
@@ -598,15 +600,12 @@ def feedback_worker(
                         transcript=transcript,
                         fallback_date=fallback_date,
                     )
-                    log(
-                        thread_name,
-                        (
-                            f"✓ moved event on {moved['date']} "
-                            f"{moved['title']} {moved['from']} -> {moved['to']}"
-                        ),
-                    )
+                    msg = f"✓ moved event on {moved['date']} {moved['title']} {moved['from']} -> {moved['to']}"
+                    log(thread_name, msg)
+                    threading.Thread(target=broadcast_voice_update, args=(f"I have successfully moved {moved['title']} to {moved['to']}",), daemon=True).start()
                 except Exception as exc:
                     log(thread_name, f"✗ voice move failed: {exc}")
+                    threading.Thread(target=broadcast_voice_update, args=("I could not move the event. Please check the logs.",), daemon=True).start()
                 continue
 
             lowered_transcript = transcript.lower()
@@ -617,15 +616,12 @@ def feedback_worker(
                         transcript=transcript,
                         fallback_date=fallback_date,
                     )
-                    log(
-                        thread_name,
-                        (
-                            f"✓ created voice event on {created['date']} "
-                            f"{created['title']} {created['start_time'].strftime('%H:%M')}"
-                        ),
-                    )
+                    msg = f"✓ created voice event on {created['date']} {created['title']} {created['start_time'].strftime('%H:%M')}"
+                    log(thread_name, msg)
+                    threading.Thread(target=broadcast_voice_update, args=(f"I have scheduled {created['title']} at {created['start_time'].strftime('%H:%M')}",), daemon=True).start()
                 except Exception as exc:
                     log(thread_name, f"✗ voice create failed: {exc}")
+                    threading.Thread(target=broadcast_voice_update, args=("I could not create the event. Please check the logs.",), daemon=True).start()
                 continue
 
             base_recommendation = shared_state.get("latest_recommendation")
@@ -674,97 +670,15 @@ def feedback_worker(
     log(thread_name, "stopped")
 
 
-def wake_word_worker(
-    feedback_queue: queue.Queue,
-    stop_event: threading.Event,
-    shared_state: dict[str, Any],
-):
+def broadcast_voice_update(text: str):
     """
-    Microphone worker that starts listening after calendar changes are applied.
-
-    Flow:
-      wait until calendar worker enables listening -> detect wake word -> capture command -> enqueue feedback
+    Sends an HTTP POST to Pi 2 (the voice agent) to trigger TTS.
     """
-    thread_name = threading.current_thread().name
-    wake_words = shared_state.get("wake_words") or DEFAULT_WAKE_WORDS
-
-    if not wake_words:
-        log(thread_name, "no wake words configured; microphone listener disabled")
-        return
-
-    is_local_stt = os.getenv("VOICE_STT_LOCAL", "false").lower() == "true"
-    language = os.getenv("VOICE_LANGUAGE", "en-US")
-    model_path = os.getenv("VOICE_MODEL_PATH", os.path.join(os.getcwd(), "vosk-model-small-en-us-0.15"))
-    trigger_seconds = max(1, int(os.getenv("VOICE_TRIGGER_LISTEN_SECONDS", "2")))
-    command_seconds = max(2, int(os.getenv("VOICE_COMMAND_LISTEN_SECONDS", "8")))
-    timeout_threshold = max(1, int(os.getenv("VOICE_TIMEOUT_THRESHOLD", "5")))
-
+    pi2_url = os.getenv("PI2_VOICE_AGENT_URL", "http://192.168.1.101:5890/speak")
     try:
-        assistant = VoiceAssistant(
-            model_path=model_path,
-            enable_tts=False,
-            is_local=is_local_stt,
-            language=language,
-        )
+        requests.post(pi2_url, json={"text": text}, timeout=5)
     except Exception as exc:
-        log(thread_name, f"failed to initialize microphone listener: {exc}")
-        return
-
-    log(thread_name, f"started. Wake words={wake_words}")
-
-    def enqueue_feedback(payload: dict):
-        try:
-            feedback_queue.put(payload, timeout=2)
-            log(
-                thread_name,
-                (
-                    f"callback -> queued feedback date={payload.get('date')} "
-                    f"source={payload.get('source')}"
-                ),
-            )
-        except queue.Full:
-            log(thread_name, "callback -> feedback queue is full; payload dropped")
-
-    while True:
-        if stop_event.is_set():
-            break
-
-        if not shared_state.get("voice_listener_enabled", False):
-            time.sleep(1)
-            continue
-
-        heard = assistant.listen(seconds=trigger_seconds, timeout_threshold=timeout_threshold)
-        normalized = heard.strip().lower()
-        if not normalized:
-            log(thread_name, "trigger listen returned no text")
-            continue
-
-        if not any(wake_word in normalized for wake_word in wake_words):
-            log(thread_name, f"heard '{heard}' but no wake word matched")
-            continue
-
-        log(thread_name, f"wake word detected: '{heard}'")
-        log(thread_name, "entering command capture mode")
-        payload = assistant.listen_and_serialize_feedback(
-            seconds=command_seconds,
-            timeout_threshold=timeout_threshold,
-            date=(
-                shared_state["latest_recommendation"].date
-                if isinstance(shared_state.get("latest_recommendation"), ScheduleRecommendation)
-                else datetime.date.today().isoformat()
-            ),
-            source="microphone-wake-word",
-            context={"wake_word": heard},
-            on_feedback=enqueue_feedback,
-        )
-
-        if not payload:
-            log(thread_name, "wake word detected but no follow-up command captured")
-            continue
-
-        log(thread_name, f"feedback payload created for {payload.get('date')}")
-
-    log(thread_name, "stopped")
+        log("broadcast", f"failed to contact Pi 2 voice agent: {exc}")
 
 
 def calendar_worker(
@@ -937,10 +851,14 @@ def calendar_worker(
             # Log summary
             total_ops = len(recommendation.calendar_operations)
             if applied_count == 0 and skipped_count == total_ops:
+                summary_msg = "No calendar changes were needed today."
                 log(thread_name, f"✓ COMPLETE: No calendar changes needed for {recommendation.date}")
             else:
+                summary_msg = f"I have applied {applied_count} updates to your schedule based on your sleep analysis."
                 log(thread_name, f"✓ COMPLETE: Applied {applied_count} ops, "
                     f"skipped {skipped_count} no_updates on {recommendation.date}")
+
+            threading.Thread(target=broadcast_voice_update, args=(summary_msg,), daemon=True).start()
 
             shared_state["latest_recommendation"] = recommendation
             shared_state["voice_listener_enabled"] = True
@@ -1081,12 +999,6 @@ def start_pipeline(host: str = "0.0.0.0", port: int = 5888):
             target=feedback_worker,
             name="feedback-worker",
             args=(feedback_queue, calendar_ops_queue, stop_event, shared_state),
-            daemon=True,
-        ),
-        threading.Thread(
-            target=wake_word_worker,
-            name="wake-word-worker",
-            args=(feedback_queue, stop_event, shared_state),
             daemon=True,
         ),
     ]
