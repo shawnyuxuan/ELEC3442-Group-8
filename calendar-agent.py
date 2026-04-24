@@ -33,6 +33,7 @@ from src.llm_interaction import (
     SleepAssessment,
     UserConstraints,
     generate_schedule_recommendation,
+    generate_voice_response,
 )
 from src.schedule_rules import schedule_item_from_calendar_event
 from src.sensehat_behavior import SenseHatController, get_cluster_profile, get_mock_schedule
@@ -455,7 +456,7 @@ def calendar_worker(calendar_ops_queue: queue.Queue, stop_event: threading.Event
     log(thread_name, "stopped")
 
 
-def listen_daily_analysis(host: str, port: int, sleep_report_queue: queue.Queue):
+def listen_daily_analysis(host: str, port: int, sleep_report_queue: queue.Queue, calendar_name: str):
     def on_report(sleep_data: dict[str, Any]):
         try:
             sleep_report_queue.put(dict(sleep_data), timeout=2)
@@ -463,7 +464,76 @@ def listen_daily_analysis(host: str, port: int, sleep_report_queue: queue.Queue)
         except queue.Full:
             log("listener", "sleep report queue is full; report dropped")
 
+    def on_voice(voice_text: str) -> str:
+        log("listener-voice", f"Processing voice command: {voice_text}")
+        date_text = datetime.datetime.now().date().isoformat()
+        
+        try:
+            # Build current schedule
+            schedule_items = build_schedule_from_calendar(calendar_name, date_text)
+            
+            # Build sensor + sleep mock (using SenseHat directly)
+            model_path = os.getenv("SLEEP_MODEL_PATH")
+            sensehat_ctl = SenseHatController(model_path=model_path)
+            
+            try:
+                # Provide a generic/default sleep mock if we don't have current sleep data
+                sleep_features = sensehat_ctl.fetch_sleep_data()
+            except Exception:
+                sleep_features = pd.DataFrame({
+                    "start_sin": [math.sin((23.0 / 24.0) * 2.0 * math.pi)],
+                    "CORE": [180.0],
+                    "DEEP": [60.0],
+                    "REM": [90.0],
+                    "AWAKE": [10.0],
+                    "UNSPECIFIED": [0.0],
+                    "weekday": [datetime.datetime.now().weekday()],
+                })
+            
+            cluster_id = int(sensehat_ctl.predict_sleep_quality(sleep_features))
+            cluster_profile = get_cluster_profile(cluster_id) or {}
+            
+            environment_data = {
+                "temperature_c": float(sensehat_ctl.sensor.get_temperature()),
+                "humidity_percent": float(sensehat_ctl.sensor.get_humidity()),
+                "pressure_hpa": float(sensehat_ctl.sensor.get_pressure()),
+            }
+            
+            llm_input = LLMInput(
+                schedule_date=date_text,
+                user_name=USER_NAME,
+                provider=DEFAULT_PROVIDER,
+                model=DEFAULT_MODEL,
+                sleep_assessment=SleepAssessment(
+                    cluster_id=cluster_id,
+                    cluster_label=str(cluster_profile.get("label", "Unknown")),
+                    summary=str(cluster_profile.get("summary", "")),
+                    likely_risks=[str(item) for item in cluster_profile.get("likely_risks", [])],
+                    recommended_work_style=str(cluster_profile.get("recommended_work_style", "")),
+                ),
+                environment=EnvironmentContext(
+                    temperature_c=environment_data["temperature_c"],
+                    humidity_percent=environment_data["humidity_percent"],
+                    pressure_hpa=environment_data["pressure_hpa"],
+                ),
+                schedule=schedule_items,
+                constraints=UserConstraints(
+                    preserve_fixed_events=True,
+                    avoid_medical_claims=True,
+                    max_schedule_changes=3,
+                    preferred_output_language="English",
+                ),
+            )
+            
+            response_text = generate_voice_response(voice_text, llm_input)
+            log("listener-voice", "Voice command handled successfully")
+            return response_text
+        except Exception as exc:
+            log("listener-voice", f"Failed: {exc}")
+            raise
+
     listener = SleepReportListener(host=host, port=port, on_report=on_report)
+    listener.on_voice = on_voice
     listener.start(debug=False, threaded=True, use_reloader=False)
 
 
@@ -478,7 +548,7 @@ def start_pipeline(host: str = "0.0.0.0", port: int = 5888):
         threading.Thread(
             target=listen_daily_analysis,
             name="listener-thread",
-            args=(host, port, sleep_report_queue),
+            args=(host, port, sleep_report_queue, calendar_name),
             daemon=True,
         ),
         threading.Thread(

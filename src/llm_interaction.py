@@ -582,6 +582,36 @@ def call_llm(
         f"LLM API call failed after {max_attempts} attempts: {last_error}"
     ) from last_error
 
+def generate_voice_response(voice_prompt: str, llm_input: LLMInput) -> str:
+    """Takes STT voice input and generates a conversational schedule response using Qwen/LLM."""
+    api_key = resolve_api_key()
+    base_url = os.getenv("QWEN_BASE_URL", DEFAULT_QWEN_BASE_URL).rstrip("/")
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    model_name = getattr(llm_input, "model", None) or DEFAULT_MODEL
+
+    system = "You are a voice assistant managing a user's calendar. Provide clear, concise, and helpful audio-friendly spoken answers about their schedule or sleep data."
+    
+    schedule_lines = []
+    for item in llm_input.schedule:
+        schedule_lines.append(f"- {item.start}-{item.end} | {item.task} | {item.description}")
+        
+    user_context = (
+        f"Sleep State: {llm_input.sleep_assessment.cluster_label}\n"
+        f"Sleep Summary: {llm_input.sleep_assessment.summary}\n"
+        "Today's Schedule:\n" + "\n".join(schedule_lines)
+    )
+    
+    prompt = f"Given this context:\n{user_context}\n\nUser asked: {voice_prompt}"
+    
+    completion = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ]
+    )
+    
+    return str(completion.choices[0].message.content).strip()
 
 # ============================================================================
 # Main Entry Points

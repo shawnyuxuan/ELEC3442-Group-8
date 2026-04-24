@@ -17,6 +17,7 @@ class SleepReportListener:
         self.data_dir = data_dir or os.path.join(os.path.dirname(__file__), "..", "daily_data")
         self.data_file_path = os.path.join(self.data_dir, data_file)
         self.on_report = on_report
+        self.on_voice = None  # New callback for voice processing
 
         os.makedirs(self.data_dir, exist_ok=True)
 
@@ -25,6 +26,25 @@ class SleepReportListener:
 
     def _register_routes(self):
         self.app.add_url_rule("/report", view_func=self.receive_sleep_data, methods=["POST"])
+        self.app.add_url_rule("/voice", view_func=self.receive_voice_command, methods=["POST"])
+
+    def receive_voice_command(self):
+        payload = request.get_json(silent=True)
+        if not payload or "text" not in payload:
+            return jsonify({"status": "error", "message": "Missing 'text' in payload"}), 400
+
+        text = payload["text"]
+        print(f"--- 收到语音 STT: {text} ---")
+        
+        if self.on_voice:
+            try:
+                response_text = self.on_voice(text)
+                return jsonify({"status": "success", "response": response_text}), 200
+            except Exception as exc:
+                print(f"[listener] failed to process voice command: {exc}")
+                return jsonify({"status": "error", "message": str(exc)}), 500
+        
+        return jsonify({"status": "error", "message": "No voice handler configured"}), 500
 
     def _to_float(self, value, field_name):
         try:
