@@ -1,9 +1,44 @@
-from vosk import Model, KaldiRecognizer
-import sounddevice as sd
-import queue
+import datetime
 import json
+import queue
+from typing import Callable
+
 import pyttsx3
-import speech_recognition as sr # The online approach for voice recognition.
+import requests
+import sounddevice as sd
+import speech_recognition as sr  # The online approach for voice recognition.
+from vosk import KaldiRecognizer, Model
+
+
+def build_voice_feedback_payload(
+    transcript: str,
+    date: str | None = None,
+    source: str = "microphone",
+    language: str = "en-US",
+    context: dict | None = None,
+) -> dict:
+    normalized_transcript = str(transcript or "").strip()
+    if not normalized_transcript:
+        raise ValueError("transcript is required")
+
+    payload = {
+        "date": date or datetime.date.today().isoformat(),
+        "transcript": normalized_transcript,
+        "source": source,
+        "language": language,
+        "captured_at": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    if context is not None:
+        payload["context"] = context
+    return payload
+
+
+def submit_voice_feedback(payload: dict, feedback_url: str, timeout: int = 10) -> dict:
+    response = requests.post(feedback_url, json=payload, timeout=timeout)
+    response.raise_for_status()
+    if not response.content:
+        return {"status": "success"}
+    return response.json()
 
 
 class VoiceAssistant:
@@ -134,3 +169,29 @@ class VoiceAssistant:
             print("No recognizable speech.")
 
         return text
+
+    def listen_and_serialize_feedback(
+        self,
+        seconds=3,
+        timeout_threshold=5,
+        date: str | None = None,
+        source: str = "microphone",
+        context: dict | None = None,
+        on_feedback: Callable[[dict], None] | None = None,
+    ) -> dict:
+        transcript = self.listen(seconds=seconds, timeout_threshold=timeout_threshold)
+        if not transcript:
+            return {}
+
+        payload = build_voice_feedback_payload(
+            transcript=transcript,
+            date=date,
+            source=source,
+            language=getattr(self, "language", "en-US"),
+            context=context,
+        )
+
+        if on_feedback is not None:
+            on_feedback(payload)
+
+        return payload

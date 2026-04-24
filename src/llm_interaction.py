@@ -143,6 +143,104 @@ def build_user_prompt(llm_input: LLMInput) -> str:
     )
 
 
+def build_feedback_system_instruction() -> str:
+    """Return a system instruction for post-apply user feedback corrections."""
+    return (
+        "You are a schedule adjustment assistant. You receive an existing schedule recommendation "
+        "and a user voice transcript describing a correction, preference, or complaint. Produce a "
+        "revised recommendation with the same JSON schema. Make the smallest coherent changes "
+        "needed to satisfy the user. Do not invent new events, do not drop original events, and "
+        "preserve fixed events. Return JSON only."
+    )
+
+
+def build_feedback_prompt(base_recommendation: ScheduleRecommendation, user_feedback: str) -> str:
+    """Format a prompt that asks the model to revise an already-generated recommendation."""
+    feedback_text = str(user_feedback or "").strip()
+    if not feedback_text:
+        raise RuntimeError("user_feedback is required for schedule adjustment")
+
+    return (
+        "Current recommendation JSON:\n"
+        f"{json.dumps(base_recommendation.to_dict(), ensure_ascii=False, indent=2)}\n\n"
+        "User voice transcript:\n"
+        f"{feedback_text}\n\n"
+        "Revise the current recommendation minimally and return the same JSON schema only."
+    )
+
+
+def build_validation_input_from_recommendation(
+    recommendation: ScheduleRecommendation,
+    context_input: LLMInput | None = None,
+) -> LLMInput:
+    """Build LLMInput used to validate and guide feedback-based recommendation revisions."""
+    if context_input is not None:
+        sleep_assessment = context_input.sleep_assessment
+        environment = context_input.environment
+        user_name = context_input.user_name
+        provider = context_input.provider
+        model = context_input.model
+        constraints = context_input.constraints
+    else: #Use mock data if no context provided (should not happen in real feedback flow since we always have original input)
+        sleep_model_path = os.getenv("SLEEP_MODEL_PATH")
+        controller = SenseHatController(model_path=sleep_model_path)
+        sleep_data = controller.fetch_sleep_data()
+        cluster = int(controller.predict_sleep_quality(sleep_data))
+
+        cluster_profile = get_cluster_profile(cluster)
+        if cluster_profile is None:
+            raise RuntimeError(f"Unsupported sleep cluster: {cluster}")
+
+        sleep_assessment = SleepAssessment(
+            cluster_id=cluster,
+            cluster_label=cluster_profile["label"],
+            summary=cluster_profile["summary"],
+            likely_risks=list(cluster_profile["likely_risks"]),
+            recommended_work_style=cluster_profile["recommended_work_style"],
+        )
+        environment = EnvironmentContext(
+            temperature_c=float(controller.sensor.get_temperature()),
+            humidity_percent=float(controller.sensor.get_humidity()),
+            pressure_hpa=float(controller.sensor.get_pressure()),
+        )
+        user_name = "feedback-user"
+        provider = DEFAULT_PROVIDER
+        model = DEFAULT_MODEL
+        constraints = UserConstraints(
+            preserve_fixed_events=True,
+            avoid_medical_claims=True,
+            max_schedule_changes=len(recommendation.optimized_schedule),
+            preferred_output_language="English",
+        )
+    
+    if context_input is not None and context_input.schedule:
+        schedule = list(context_input.schedule)
+    else:
+        schedule = [
+            ScheduleItem(
+                item.event_id,
+                item.start,
+                item.end,
+                item.title,
+                item.description,
+                item.intensity or "medium",
+                bool(item.movable) if item.movable is not None else True,
+            )
+            for item in recommendation.optimized_schedule
+        ]
+
+    return LLMInput(
+        schedule_date=recommendation.date,
+        user_name=user_name,
+        provider=provider,
+        model=model,
+        sleep_assessment=sleep_assessment,
+        environment=environment,
+        schedule=schedule,
+        constraints=constraints,
+    )
+
+
 def build_static_mock_input(provider: str, model: str) -> LLMInput:
     """Build a static mock LLMInput for testing."""
     return LLMInput(
@@ -658,6 +756,55 @@ def generate_schedule_recommendation(llm_input: LLMInput | None = None) -> Sched
     # Convert to ScheduleRecommendation
     recommendation = ScheduleRecommendation.from_dict(llm_response)
     return recommendation
+
+
+def generate_schedule_adjustment(
+    base_recommendation: ScheduleRecommendation,
+    user_feedback: str,
+    context_input: LLMInput | None = None,
+) -> ScheduleRecommendation:
+    """
+    Revise an already-applied recommendation using a user voice transcript.
+
+    The output keeps the same ScheduleRecommendation schema so the calendar worker
+    can reuse the same validation and application path.
+    """
+    system_instruction = build_feedback_system_instruction()
+    user_prompt = build_feedback_prompt(base_recommendation, user_feedback)
+    validation_input = build_validation_input_from_recommendation(
+        base_recommendation,
+        context_input=context_input,
+    )
+
+    print(f"[Prompt] Generated feedback adjustment for {base_recommendation.date}")
+
+    llm_response = call_llm(system_instruction, user_prompt, validation_input)
+
+    try:
+        print("\n[Validation] Checking feedback JSON structure...")
+        validate_json_structure(llm_response)
+        print("[Validation] ✓ JSON structure valid")
+
+        print("[Validation] Checking feedback calendar_operations...")
+        validate_calendar_operations(llm_response["calendar_operations"], validation_input)
+        print(
+            f"[Validation] ✓ calendar_operations valid ({len(llm_response['calendar_operations'])} items)"
+        )
+
+        print("[Validation] Checking feedback optimized_schedule...")
+        validate_optimized_schedule(llm_response["optimized_schedule"], validation_input)
+        print(
+            f"[Validation] ✓ optimized_schedule valid ({len(llm_response['optimized_schedule'])} items)"
+        )
+
+    except RuntimeError as e:
+        print(f"\n[Validation] ✗ FAILED: {e}")
+        print("\n[Validation] Problem context:")
+        print(f"[Validation] LLM response was:\n{json.dumps(llm_response, indent=2, ensure_ascii=False)}")
+        raise
+
+    print("\n[Validation] ✓ Feedback adjustment checks passed")
+    return ScheduleRecommendation.from_dict(llm_response)
 
 
 # ============================================================================
