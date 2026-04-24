@@ -13,6 +13,7 @@
 import datetime
 import math
 import os
+import re
 import traceback
 import pandas as pd
 import queue
@@ -23,6 +24,7 @@ from typing import Any
 
 from src.calendar_interaction import CalendarController, DEFAULT_CALENDAR_NAME
 from src.daily_analysis import SleepReportListener
+from src.calendar_feedback import CalendarFeedbackListener
 from src.llm_contract import CalendarOperation, ScheduleRecommendation
 from src.llm_interaction import (
     DEFAULT_MODEL,
@@ -32,11 +34,13 @@ from src.llm_interaction import (
     ScheduleItem,
     SleepAssessment,
     UserConstraints,
+    generate_schedule_adjustment,
     generate_schedule_recommendation,
     generate_voice_response,
 )
 from src.schedule_rules import schedule_item_from_calendar_event
 from src.sensehat_behavior import SenseHatController, get_cluster_profile, get_mock_schedule
+from src.speech_to_text import VoiceAssistant, build_voice_feedback_payload
 
 QUEUE_MAXSIZE = 100
 WORKER_POLL_TIMEOUT_SECONDS = 1
@@ -44,6 +48,50 @@ CALENDAR_READ_MAX_ATTEMPTS = 3
 CALENDAR_READ_RETRY_SECONDS = 2
 SENTINEL = object()
 USER_NAME = os.getenv("USER_NAME", "Jayden")
+DEFAULT_WAKE_WORDS = tuple(
+    token.strip().lower()
+    for token in os.getenv("VOICE_WAKE_WORDS", "hey calendar").split(",")
+    if token.strip()
+)
+DEFAULT_VOICE_CREATE_DURATION_MINUTES = max(15, int(os.getenv("VOICE_CREATE_DURATION_MINUTES", "60")))
+
+
+def _to_local_datetime(value):
+    if isinstance(value, datetime.datetime) and value.tzinfo is not None:
+        local_tz = datetime.datetime.now().astimezone().tzinfo
+        return value.astimezone(local_tz)
+    return value
+
+
+def normalize_date_key(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    for fmt in (
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%d/%m/%y %H:%M",
+        "%d/%m/%Y %H:%M",
+        "%d/%m/%Y",
+        "%d/%m/%y",
+    ):
+        try:
+            parsed = datetime.datetime.strptime(text, fmt)
+            return parsed.date().isoformat()
+        except ValueError:
+            continue
+
+    if "T" in text:
+        try:
+            parsed = datetime.datetime.fromisoformat(text)
+            return parsed.date().isoformat()
+        except ValueError:
+            pass
+
+    return text[:10]
 
 def log(stage: str, message: str):
     now = datetime.datetime.now().isoformat(timespec="seconds")
@@ -107,6 +155,227 @@ def build_schedule_from_calendar(calendar_name: str, date_text: str) -> list[Sch
     return schedule
 
 
+def _parse_voice_date(transcript: str, fallback_date: str) -> str:
+    lowered = transcript.lower()
+    if "tomorrow" in lowered:
+        return (datetime.date.fromisoformat(fallback_date) + datetime.timedelta(days=1)).isoformat()
+    if "today" in lowered:
+        return fallback_date
+
+    date_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", transcript)
+    if date_match:
+        return date_match.group(1)
+
+    return fallback_date
+
+
+def _parse_voice_time(transcript: str) -> datetime.time | None:
+    lowered = transcript.lower()
+    patterns = [
+        r"\b(?:at|around|for)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
+        r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, lowered)
+        if not match:
+            continue
+
+        hour_text = match.group(1)
+        minute_text = match.group(2) or "00"
+        meridiem = match.group(3)
+
+        hour = int(hour_text)
+        minute = int(minute_text)
+
+        if meridiem:
+            if hour == 12:
+                hour = 0
+            if meridiem == "pm":
+                hour += 12
+
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return datetime.time(hour=hour, minute=minute)
+
+    return None
+
+
+def _parse_voice_duration_minutes(transcript: str) -> int:
+    lowered = transcript.lower()
+    if match := re.search(r"\bfor\s*(\d{1,2})\s*hours?\b", lowered):
+        return max(15, int(match.group(1)) * 60)
+    if match := re.search(r"\bfor\s*(\d{1,3})\s*minutes?\b", lowered):
+        return max(15, int(match.group(1)))
+    return DEFAULT_VOICE_CREATE_DURATION_MINUTES
+
+
+def _parse_voice_event_title(transcript: str) -> str:
+    lowered = transcript.lower()
+    cleaned = re.sub(r"\b(hey\s+calendar|calendar|please|could you|can you)\b", "", lowered)
+    cleaned = re.sub(r"\b(add|create|new|schedule|event|meeting|task)\b", "", cleaned)
+    cleaned = re.sub(r"\b(at|around|for|today|tomorrow|the|a|an)\b", "", cleaned)
+    cleaned = re.sub(r"\b\d{1,2}(:\d{2})?\b", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if cleaned:
+        return cleaned[:80].title()
+    return "Voice Created Event"
+
+
+def parse_voice_move_request(transcript: str, fallback_date: str) -> dict | None:
+    lowered = transcript.lower()
+    if "move" not in lowered:
+        return None
+
+    # Examples supported:
+    # - move the schedule at 15 to 16
+    # - move deep work at 15:00 to 16:30
+    match = re.search(
+        r"\bmove\s+(?P<title>.*?)\s*at\s*(?P<from>\d{1,2}(?::\d{2})?)\s+to\s*(?P<to>\d{1,2}(?::\d{2})?)\b",
+        lowered,
+    )
+    if not match:
+        return None
+
+    def _to_hhmm(value: str) -> str:
+        if ":" in value:
+            hour, minute = value.split(":", 1)
+        else:
+            hour, minute = value, "00"
+        return f"{int(hour):02d}:{int(minute):02d}"
+
+    title = re.sub(r"\b(the|schedule|event|task|meeting)\b", "", match.group("title") or "")
+    title = re.sub(r"\s+", " ", title).strip()
+
+    return {
+        "date": _parse_voice_date(transcript, fallback_date),
+        "from_hhmm": _to_hhmm(match.group("from")),
+        "to_hhmm": _to_hhmm(match.group("to")),
+        "title_hint": title,
+    }
+
+
+def move_calendar_event_from_voice(calendar_name: str, transcript: str, fallback_date: str) -> dict:
+    move_request = parse_voice_move_request(transcript, fallback_date)
+    if move_request is None:
+        raise ValueError("Unable to parse a move-event request from the voice transcript")
+
+    date_start = normalize_report_date(move_request["date"])
+    controller = CalendarController(calendar_name=calendar_name)
+    events = controller.fetch_events(date_start)
+
+    source_event = None
+    for event in events:
+        vevent = event.vobject_instance.vevent
+        title = str(vevent.summary.value)
+        start_hhmm = _to_local_datetime(vevent.dtstart.value).strftime("%H:%M")
+
+        if start_hhmm != move_request["from_hhmm"]:
+            continue
+
+        title_hint = move_request["title_hint"]
+        if title_hint and title_hint not in title.lower():
+            continue
+
+        source_event = event
+        break
+
+    if source_event is None:
+        raise RuntimeError(
+            f"No matching event found at {move_request['from_hhmm']} on {move_request['date']}"
+        )
+
+    vevent = source_event.vobject_instance.vevent
+    original_start = vevent.dtstart.value
+    original_end = vevent.dtend.value
+    duration = original_end - original_start
+
+    to_hour, to_minute = [int(token) for token in move_request["to_hhmm"].split(":")]
+    local_tz = datetime.datetime.now().astimezone().tzinfo
+    local_original_start = _to_local_datetime(original_start)
+    new_start_local = datetime.datetime.combine(
+        local_original_start.date(),
+        datetime.time(to_hour, to_minute),
+        local_tz,
+    )
+
+    if isinstance(original_start, datetime.datetime) and original_start.tzinfo is not None:
+        new_start = new_start_local.astimezone(original_start.tzinfo)
+    else:
+        new_start = datetime.datetime.combine(
+            local_original_start.date(),
+            datetime.time(to_hour, to_minute),
+        )
+    new_end = new_start + duration
+
+    controller.update_event(
+        event=source_event,
+        new_start_time=new_start,
+        new_end_time=new_end,
+    )
+
+    return {
+        "date": move_request["date"],
+        "title": str(vevent.summary.value),
+        "from": move_request["from_hhmm"],
+        "to": move_request["to_hhmm"],
+    }
+
+
+def parse_voice_create_request(transcript: str, fallback_date: str) -> dict | None:
+    lowered = transcript.lower()
+    if not any(keyword in lowered for keyword in ("add", "create", "new schedule", "new event")):
+        return None
+
+    event_date = _parse_voice_date(transcript, fallback_date)
+    event_time = _parse_voice_time(transcript)
+    if event_time is None:
+        return None
+
+    duration_minutes = _parse_voice_duration_minutes(transcript)
+    local_tz = datetime.datetime.now().astimezone().tzinfo
+    start_dt = datetime.datetime.combine(datetime.date.fromisoformat(event_date), event_time, local_tz)
+    end_dt = start_dt + datetime.timedelta(minutes=duration_minutes)
+
+    return {
+        "date": event_date,
+        "title": _parse_voice_event_title(transcript),
+        "start_time": start_dt,
+        "end_time": end_dt,
+        "description": f"Created from voice command: {transcript}",
+    }
+
+
+def create_calendar_event_from_voice(calendar_name: str, transcript: str, fallback_date: str) -> dict:
+    create_request = parse_voice_create_request(transcript, fallback_date)
+    if create_request is None:
+        raise ValueError("Unable to parse a create-event request from the voice transcript")
+
+    controller = CalendarController(calendar_name=calendar_name)
+    controller.create_event(
+        event_title=create_request["title"],
+        start_time=create_request["start_time"],
+        end_time=create_request["end_time"],
+        description=create_request["description"],
+    )
+
+    return create_request
+
+
+def listen_calendar_feedback(host: str, port: int, feedback_queue: queue.Queue):
+    def on_feedback(feedback_data: dict[str, Any]):
+        try:
+            feedback_queue.put(dict(feedback_data), timeout=2)
+            log(
+                "feedback-listener",
+                f"enqueued voice feedback date={feedback_data.get('date')} queue={feedback_queue.qsize()}",
+            )
+        except queue.Full:
+            log("feedback-listener", "feedback queue is full; feedback dropped")
+
+    listener = CalendarFeedbackListener(host=host, port=port, on_feedback=on_feedback)
+    listener.start(debug=False, threaded=True, use_reloader=False)
+
+
 def build_sleep_features_from_report(sleep_report: dict[str, Any]) -> pd.DataFrame:
     date_start = normalize_report_date(str(sleep_report.get("date", "")))
     weekday = date_start.weekday()
@@ -136,6 +405,7 @@ def llm_worker(
     calendar_ops_queue: queue.Queue,
     stop_event: threading.Event,
     calendar_name: str,
+    shared_state: dict[str, Any],
 ):
     """
     LLM Worker Thread - Orchestrates the sleep analysis → LLM → recommendation pipeline.
@@ -244,6 +514,9 @@ def llm_worker(
                     preferred_output_language="English",
                 ),
             )
+
+            # Keep the latest real-time context for feedback adjustments.
+            shared_state["latest_llm_input"] = llm_input
             
             log(thread_name, f"[3/4] ✓ LLMInput built: user={llm_input.user_name}, "
                 f"schedule={len(llm_input.schedule)} items")
@@ -279,7 +552,227 @@ def llm_worker(
     log(thread_name, "stopped")
 
 
-def calendar_worker(calendar_ops_queue: queue.Queue, stop_event: threading.Event, calendar_name: str):
+def feedback_worker(
+    feedback_queue: queue.Queue,
+    calendar_ops_queue: queue.Queue,
+    stop_event: threading.Event,
+    shared_state: dict[str, Any],
+):
+    """
+    Feedback worker - revises the latest applied recommendation from a voice transcript.
+    """
+    thread_name = threading.current_thread().name
+    log(thread_name, "started. Waiting for voice feedback...")
+
+    while True:
+        if stop_event.is_set() and feedback_queue.empty():
+            break
+
+        try:
+            feedback = feedback_queue.get(timeout=WORKER_POLL_TIMEOUT_SECONDS)
+        except queue.Empty:
+            continue
+
+        if feedback is SENTINEL:
+            feedback_queue.task_done()
+            log(thread_name, "received sentinel, exiting")
+            break
+
+        try:
+            transcript = str(feedback.get("transcript", "")).strip()
+            if not transcript:
+                log(thread_name, "skipping empty transcript feedback")
+                continue
+
+            latest_recommendation = shared_state.get("latest_recommendation")
+            fallback_date = (
+                latest_recommendation.date
+                if isinstance(latest_recommendation, ScheduleRecommendation)
+                else str(feedback.get("date") or datetime.date.today().isoformat())
+            )
+
+            if "move" in transcript.lower():
+                try:
+                    moved = move_calendar_event_from_voice(
+                        calendar_name=os.getenv("CALENDAR_NAME", DEFAULT_CALENDAR_NAME),
+                        transcript=transcript,
+                        fallback_date=fallback_date,
+                    )
+                    log(
+                        thread_name,
+                        (
+                            f"✓ moved event on {moved['date']} "
+                            f"{moved['title']} {moved['from']} -> {moved['to']}"
+                        ),
+                    )
+                except Exception as exc:
+                    log(thread_name, f"✗ voice move failed: {exc}")
+                continue
+
+            lowered_transcript = transcript.lower()
+            if any(keyword in lowered_transcript for keyword in ("add", "create", "new schedule", "new event")):
+                try:
+                    created = create_calendar_event_from_voice(
+                        calendar_name=os.getenv("CALENDAR_NAME", DEFAULT_CALENDAR_NAME),
+                        transcript=transcript,
+                        fallback_date=fallback_date,
+                    )
+                    log(
+                        thread_name,
+                        (
+                            f"✓ created voice event on {created['date']} "
+                            f"{created['title']} {created['start_time'].strftime('%H:%M')}"
+                        ),
+                    )
+                except Exception as exc:
+                    log(thread_name, f"✗ voice create failed: {exc}")
+                continue
+
+            base_recommendation = shared_state.get("latest_recommendation")
+            if not isinstance(base_recommendation, ScheduleRecommendation):
+                log(thread_name, "skipping feedback because no base recommendation is available")
+                continue
+
+            context_input = None
+            latest_llm_input = shared_state.get("latest_llm_input")
+            if isinstance(latest_llm_input, LLMInput):
+                latest_date = normalize_date_key(latest_llm_input.schedule_date)
+                recommendation_date = normalize_date_key(base_recommendation.date)
+                if latest_date == recommendation_date:
+                    context_input = latest_llm_input
+                else:
+                    log(
+                        thread_name,
+                        (
+                            "feedback date/context date mismatch "
+                            f"({recommendation_date} vs {latest_date}); "
+                            "falling back to local context build"
+                        ),
+                    )
+
+            log(thread_name, f"processing feedback for {feedback.get('date')}: {transcript}")
+            adjusted_recommendation = generate_schedule_adjustment(
+                base_recommendation,
+                transcript,
+                context_input=context_input,
+            )
+
+            calendar_ops_queue.put(adjusted_recommendation, timeout=2)
+            log(
+                thread_name,
+                (
+                    f"✓ queued adjusted recommendation: date={adjusted_recommendation.date} "
+                    f"ops={len(adjusted_recommendation.calendar_operations)}"
+                ),
+            )
+
+        except Exception as exc:
+            log(thread_name, f"✗ FAILED: error processing feedback: {exc}")
+        finally:
+            feedback_queue.task_done()
+
+    log(thread_name, "stopped")
+
+
+def wake_word_worker(
+    feedback_queue: queue.Queue,
+    stop_event: threading.Event,
+    shared_state: dict[str, Any],
+):
+    """
+    Microphone worker that starts listening after calendar changes are applied.
+
+    Flow:
+      wait until calendar worker enables listening -> detect wake word -> capture command -> enqueue feedback
+    """
+    thread_name = threading.current_thread().name
+    wake_words = shared_state.get("wake_words") or DEFAULT_WAKE_WORDS
+
+    if not wake_words:
+        log(thread_name, "no wake words configured; microphone listener disabled")
+        return
+
+    is_local_stt = os.getenv("VOICE_STT_LOCAL", "false").lower() == "true"
+    language = os.getenv("VOICE_LANGUAGE", "en-US")
+    model_path = os.getenv("VOICE_MODEL_PATH", os.path.join(os.getcwd(), "vosk-model-small-en-us-0.15"))
+    trigger_seconds = max(1, int(os.getenv("VOICE_TRIGGER_LISTEN_SECONDS", "2")))
+    command_seconds = max(2, int(os.getenv("VOICE_COMMAND_LISTEN_SECONDS", "8")))
+    timeout_threshold = max(1, int(os.getenv("VOICE_TIMEOUT_THRESHOLD", "5")))
+
+    try:
+        assistant = VoiceAssistant(
+            model_path=model_path,
+            enable_tts=False,
+            is_local=is_local_stt,
+            language=language,
+        )
+    except Exception as exc:
+        log(thread_name, f"failed to initialize microphone listener: {exc}")
+        return
+
+    log(thread_name, f"started. Wake words={wake_words}")
+
+    def enqueue_feedback(payload: dict):
+        try:
+            feedback_queue.put(payload, timeout=2)
+            log(
+                thread_name,
+                (
+                    f"callback -> queued feedback date={payload.get('date')} "
+                    f"source={payload.get('source')}"
+                ),
+            )
+        except queue.Full:
+            log(thread_name, "callback -> feedback queue is full; payload dropped")
+
+    while True:
+        if stop_event.is_set():
+            break
+
+        if not shared_state.get("voice_listener_enabled", False):
+            time.sleep(1)
+            continue
+
+        heard = assistant.listen(seconds=trigger_seconds, timeout_threshold=timeout_threshold)
+        normalized = heard.strip().lower()
+        if not normalized:
+            log(thread_name, "trigger listen returned no text")
+            continue
+
+        if not any(wake_word in normalized for wake_word in wake_words):
+            log(thread_name, f"heard '{heard}' but no wake word matched")
+            continue
+
+        log(thread_name, f"wake word detected: '{heard}'")
+        log(thread_name, "entering command capture mode")
+        payload = assistant.listen_and_serialize_feedback(
+            seconds=command_seconds,
+            timeout_threshold=timeout_threshold,
+            date=(
+                shared_state["latest_recommendation"].date
+                if isinstance(shared_state.get("latest_recommendation"), ScheduleRecommendation)
+                else datetime.date.today().isoformat()
+            ),
+            source="microphone-wake-word",
+            context={"wake_word": heard},
+            on_feedback=enqueue_feedback,
+        )
+
+        if not payload:
+            log(thread_name, "wake word detected but no follow-up command captured")
+            continue
+
+        log(thread_name, f"feedback payload created for {payload.get('date')}")
+
+    log(thread_name, "stopped")
+
+
+def calendar_worker(
+    calendar_ops_queue: queue.Queue,
+    stop_event: threading.Event,
+    calendar_name: str,
+    shared_state: dict[str, Any],
+):
     """
     Calendar Worker Thread - Applies schedule recommendations to the calendar.
     
@@ -358,6 +851,9 @@ def calendar_worker(calendar_ops_queue: queue.Queue, stop_event: threading.Event
             if not isinstance(recommendation, ScheduleRecommendation):
                 log(thread_name, f"✗ Invalid payload type: {type(recommendation).__name__}")
                 continue
+
+            # Do not block wake-word interaction if current recommendation fails to apply.
+            shared_state["voice_listener_enabled"] = True
 
             # Parse date from recommendation
             date_start = datetime.datetime.combine(
@@ -446,9 +942,13 @@ def calendar_worker(calendar_ops_queue: queue.Queue, stop_event: threading.Event
                 log(thread_name, f"✓ COMPLETE: Applied {applied_count} ops, "
                     f"skipped {skipped_count} no_updates on {recommendation.date}")
 
+            shared_state["latest_recommendation"] = recommendation
+            shared_state["voice_listener_enabled"] = True
+
         except Exception as exc:
             log(thread_name, f"✗ FAILED: Error processing recommendation: {exc}")
             traceback.print_exc()
+            shared_state["voice_listener_enabled"] = True
             
         finally:
             calendar_ops_queue.task_done()
@@ -540,9 +1040,17 @@ def listen_daily_analysis(host: str, port: int, sleep_report_queue: queue.Queue,
 def start_pipeline(host: str = "0.0.0.0", port: int = 5888):
     sleep_report_queue: queue.Queue = queue.Queue(maxsize=QUEUE_MAXSIZE)
     calendar_ops_queue: queue.Queue = queue.Queue(maxsize=QUEUE_MAXSIZE)
+    feedback_queue: queue.Queue = queue.Queue(maxsize=QUEUE_MAXSIZE)
     stop_event = threading.Event()
+    shared_state: dict[str, Any] = {
+        "latest_recommendation": None,
+        "latest_llm_input": None,
+        "voice_listener_enabled": False,
+        "wake_words": DEFAULT_WAKE_WORDS,
+    }
 
     calendar_name = os.getenv("CALENDAR_NAME", DEFAULT_CALENDAR_NAME)
+    feedback_port = int(os.getenv("CALENDAR_FEEDBACK_PORT", "5889"))
 
     threads = [
         threading.Thread(
@@ -554,13 +1062,31 @@ def start_pipeline(host: str = "0.0.0.0", port: int = 5888):
         threading.Thread(
             target=llm_worker,
             name="llm-worker",
-            args=(sleep_report_queue, calendar_ops_queue, stop_event, calendar_name),
+            args=(sleep_report_queue, calendar_ops_queue, stop_event, calendar_name, shared_state),
             daemon=True,
         ),
         threading.Thread(
             target=calendar_worker,
             name="calendar-worker",
-            args=(calendar_ops_queue, stop_event, calendar_name),
+            args=(calendar_ops_queue, stop_event, calendar_name, shared_state),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=listen_calendar_feedback,
+            name="feedback-listener-thread",
+            args=(host, feedback_port, feedback_queue),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=feedback_worker,
+            name="feedback-worker",
+            args=(feedback_queue, calendar_ops_queue, stop_event, shared_state),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=wake_word_worker,
+            name="wake-word-worker",
+            args=(feedback_queue, stop_event, shared_state),
             daemon=True,
         ),
     ]
@@ -581,6 +1107,7 @@ def start_pipeline(host: str = "0.0.0.0", port: int = 5888):
         worker_thread.start()
 
     log("main", f"pipeline started at http://{host}:{port}/report")
+    log("main", f"feedback listener started at http://{host}:{feedback_port}/feedback")
 
     try:
         while not stop_event.is_set():
