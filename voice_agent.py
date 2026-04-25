@@ -8,6 +8,9 @@ import threading
 import queue
 from flask import Flask, request, jsonify
 from src.speech_to_text import VoiceAssistant
+from dotenv import load_dotenv
+
+load_dotenv()  # Load environment variables from .env file
 
 app = Flask(__name__)
 
@@ -15,7 +18,7 @@ app = Flask(__name__)
 tts_queue = queue.Queue()
 
 # Global config
-SERVER_URL = "http://192.168.1.100:5888/voice"
+SERVER_URL = os.getenv("VOICE_SERVER_URL", "http://192.168.1.100:5888/voice")
 ENGINE = None
 
 def check_microphone():
