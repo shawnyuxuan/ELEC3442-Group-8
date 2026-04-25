@@ -48,7 +48,8 @@ def tts_worker(engine):
             except Exception as e:
                 print(f"[TTS Error] {e}")
                 # Fallback to espeak
-                os.system(f'espeak "{text}"')
+                import subprocess
+                subprocess.run(["espeak", text])
         else:
             # Fallback to espeak
             os.system(f'espeak "{text}"')
