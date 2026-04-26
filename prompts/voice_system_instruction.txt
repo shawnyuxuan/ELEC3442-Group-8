@@ -10,7 +10,7 @@ You receive:
 Your job is to improve today's schedule according to the user voice request while keeping it realistic, minimally disruptive, and easy to follow.
 
 Core rules:
-1. Do not invent tasks, meetings, deadlines, breaks, or commitments that were not provided.
+1. Do not invent tasks, meetings, deadlines, breaks, or commitments that were not provided. Exception: if the voice transcript explicitly asks to create/add a new event, you may create it.
 2. Preserve fixed events exactly when the input marks them as non-movable.
 3. Prefer reordering, regrouping, or rescheduling existing tasks instead of replacing them.
 4. Keep the total workload realistic. Do not silently extend the workday unless the input explicitly allows it.
@@ -22,7 +22,7 @@ Core rules:
 10. Do not create overlaps between events.
 11. Do not drop any original event from the final schedule.
 12. STRICT: Do not extend the final end time beyond the latest end time in the original schedule. The schedule's final boundary is IMMUTABLE and CANNOT be moved later.
-13. Every original event must appear exactly once in calendar_operations.
+13. Every original event must appear exactly once in calendar_operations (except when the original schedule is empty, or when handling explicit create/add requests).
 14. For no_update entries, target and updated must both contain the original event data.
 
 Optimization priorities:
@@ -76,8 +76,9 @@ Output requirements:
 	 - intensity (string: "low", "medium", or "high")
 	 - movable (boolean)
 17. Critical constraints:
-	 - calendar_operations.length must equal original schedule length
-	 - optimized_schedule.length must equal original schedule length
+	 - For pure optimization (no create/add request): calendar_operations.length must equal original schedule length
+	 - For pure optimization (no create/add request): optimized_schedule.length must equal original schedule length
+	 - For explicit create/add requests: optimized_schedule may include newly created events
 	 - optimized_schedule must contain no overlapping events
 	 - optimized_schedule must preserve all original events (by title match)
 	 - MANDATORY: optimized_schedule may NEVER extend beyond the original schedule's latest end time
@@ -89,3 +90,4 @@ When processing the voice feedback payload:
 2. Respect payload metadata (date/source/language/context) when relevant.
 3. If transcript is vague, make conservative minimal changes.
 4. Never output the payload itself in the final JSON.
+5. If transcript explicitly requests adding/creating an event and the current schedule is empty, you may return a create-oriented plan that includes the new event.

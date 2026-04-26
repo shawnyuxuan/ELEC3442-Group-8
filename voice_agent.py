@@ -6,6 +6,8 @@ import sys
 import os
 import threading
 import queue
+import platform
+import subprocess
 from flask import Flask, request, jsonify
 from src.speech_to_text import VoiceAssistant, submit_voice_feedback
 from dotenv import load_dotenv
@@ -20,6 +22,28 @@ tts_queue = queue.Queue()
 # Global config
 SERVER_URL = os.getenv("VOICE_SERVER_URL", "http://192.168.1.100:5888/voice")
 ENGINE = None
+
+
+def play_wake_ack() -> None:
+    """Play a short non-blocking acknowledgement sound after wake-word detection."""
+    # Terminal bell fallback.
+    try:
+        print("\a", end="", flush=True)
+    except Exception:
+        pass
+
+    # macOS system sound if available.
+    if platform.system().lower() == "darwin":
+        sound_path = "/System/Library/Sounds/Glass.aiff"
+        if os.path.exists(sound_path):
+            try:
+                subprocess.Popen(
+                    ["afplay", sound_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                pass
 
 def check_microphone():
     """Ensure a microphone is available for SpeechRecognition."""
@@ -77,7 +101,7 @@ def mic_worker_thread(server_url):
     is_local_stt = os.getenv("VOICE_STT_LOCAL", "false").lower() == "true"
     language = os.getenv("VOICE_LANGUAGE", "en-US")
     model_path = os.getenv("VOICE_MODEL_PATH", os.path.join(os.getcwd(), "vosk-model-small-en-us-0.15"))
-    trigger_seconds = max(1, int(os.getenv("VOICE_TRIGGER_LISTEN_SECONDS", "2")))
+    trigger_seconds = max(1, int(os.getenv("VOICE_TRIGGER_LISTEN_SECONDS", "1")))
     command_seconds = max(2, int(os.getenv("VOICE_COMMAND_LISTEN_SECONDS", "8")))
     timeout_threshold = max(1, int(os.getenv("VOICE_TIMEOUT_THRESHOLD", "5")))
 
@@ -94,7 +118,7 @@ def mic_worker_thread(server_url):
 
     print(f"[Mic Worker] listening for wake words: {wake_words}")
 
-    def on_feedback_captured(payload: dict):
+    def send_feedback(payload: dict):
         transcript = payload.get("transcript", "")
         print(f"[Mic Worker] Sending payload to {server_url}: {transcript}")
         try:
@@ -104,6 +128,10 @@ def mic_worker_thread(server_url):
                 tts_queue.put(response_text)
         except requests.exceptions.RequestException as e:
             print(f"[Mic Worker] Connection failed: {e}")
+
+    def on_feedback_captured(payload: dict):
+        # Avoid blocking the microphone loop on network latency.
+        threading.Thread(target=send_feedback, args=(payload,), daemon=True).start()
 
     # Listen loop
     while True:
@@ -116,8 +144,7 @@ def mic_worker_thread(server_url):
             continue
 
         print(f"\n[Mic Worker] Wake word detected: '{heard}'. Listening for command...")
-        # Play a soft acknowledgement or simply start listening for command
-        # tts_queue.put("I'm listening.")
+        play_wake_ack()
         
         payload = assistant.listen_and_serialize_feedback(
             seconds=command_seconds,

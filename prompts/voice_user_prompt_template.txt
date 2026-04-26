@@ -36,7 +36,7 @@ Constraints:
 - Output language: {preferred_output_language}
 - Do not extend beyond the original latest end time.
 - Do not overlap events.
-- Keep every original event exactly once in the final schedule.
+- Keep every original event exactly once in the final schedule. Exception: explicit add/create voice requests may append new events.
 
 Voice payload JSON (authoritative user intent):
 {voice_payload_json}

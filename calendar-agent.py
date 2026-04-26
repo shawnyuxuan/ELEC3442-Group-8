@@ -890,6 +890,22 @@ def listen_daily_analysis(host: str, port: int, calendar_ops_queue: queue.Queue,
 
         log("listener-voice", f"Processing voice command: {transcript}")
         date_text = datetime.datetime.now().date().isoformat()
+        lowered_transcript = transcript.lower()
+
+        # Fast path: explicit create requests should directly create events instead of
+        # forcing a schedule-optimization response over an empty/non-empty schedule.
+        if any(keyword in lowered_transcript for keyword in ("add", "create", "new schedule", "new event")):
+            try:
+                created = create_calendar_event_from_voice(
+                    calendar_name=os.getenv("CALENDAR_NAME", DEFAULT_CALENDAR_NAME),
+                    transcript=transcript,
+                    fallback_date=date_text,
+                )
+                created_time = created["start_time"].strftime("%H:%M")
+                log("listener-voice", f"Voice create handled directly: {created['title']} at {created_time}")
+                return f"I have scheduled {created['title']} at {created_time}"
+            except Exception as create_error:
+                log("listener-voice", f"Voice create parse/apply failed, falling back to LLM flow: {create_error}")
         
         try:
             # Build current schedule
