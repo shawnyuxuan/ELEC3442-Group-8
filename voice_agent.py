@@ -8,8 +8,9 @@ import threading
 import queue
 import platform
 import subprocess
+import time
 from flask import Flask, request, jsonify
-from src.speech_to_text import VoiceAssistant, submit_voice_feedback
+from src.speech_to_text import VoiceAssistant, build_voice_feedback_payload, submit_voice_feedback
 from dotenv import load_dotenv
 
 load_dotenv()  # Load environment variables from .env file
@@ -102,8 +103,20 @@ def mic_worker_thread(server_url):
     language = os.getenv("VOICE_LANGUAGE", "en-US")
     model_path = os.getenv("VOICE_MODEL_PATH", os.path.join(os.getcwd(), "vosk-model-small-en-us-0.15"))
     trigger_seconds = max(1, int(os.getenv("VOICE_TRIGGER_LISTEN_SECONDS", "1")))
-    command_seconds = max(2, int(os.getenv("VOICE_COMMAND_LISTEN_SECONDS", "8")))
+    command_seconds = max(3, int(os.getenv("VOICE_COMMAND_LISTEN_SECONDS", "12")))
     timeout_threshold = max(1, int(os.getenv("VOICE_TIMEOUT_THRESHOLD", "5")))
+    post_wake_delay_ms = max(0, int(os.getenv("VOICE_POST_WAKE_DELAY_MS", "350")))
+    min_command_words = max(1, int(os.getenv("VOICE_MIN_COMMAND_WORDS", "3")))
+    max_command_retries = max(0, int(os.getenv("VOICE_COMMAND_MAX_RETRIES", "1")))
+    local_samplerate_env = os.getenv("VOICE_LOCAL_SAMPLE_RATE", "").strip()
+    local_blocksize = max(1024, int(os.getenv("VOICE_LOCAL_BLOCKSIZE", "4000")))
+
+    local_samplerate = None
+    if local_samplerate_env:
+        try:
+            local_samplerate = int(local_samplerate_env)
+        except ValueError:
+            print(f"[Mic Worker] invalid VOICE_LOCAL_SAMPLE_RATE='{local_samplerate_env}', ignore it")
 
     try:
         assistant = VoiceAssistant(
@@ -111,6 +124,8 @@ def mic_worker_thread(server_url):
             enable_tts=False,
             is_local=is_local_stt,
             language=language,
+            samplerate=local_samplerate,
+            blocksize=local_blocksize,
         )
     except Exception as exc:
         print(f"[Mic Worker] failed to initialize microphone listener: {exc}")
@@ -146,14 +161,34 @@ def mic_worker_thread(server_url):
         print(f"\n[Mic Worker] Wake word detected: '{heard}'. Listening for command...")
         play_wake_ack()
         
-        payload = assistant.listen_and_serialize_feedback(
-            seconds=command_seconds,
-            timeout_threshold=timeout_threshold,
-            date="today", # Simplified, could be replaced if needed
+        if post_wake_delay_ms > 0:
+            time.sleep(post_wake_delay_ms / 1000.0)
+
+        transcript = ""
+        for attempt in range(max_command_retries + 1):
+            transcript = assistant.listen(seconds=command_seconds, timeout_threshold=timeout_threshold).strip()
+            if transcript and len(transcript.split()) >= min_command_words:
+                break
+
+            if attempt < max_command_retries:
+                print(
+                    f"[Mic Worker] Command too short/unclear ('{transcript}'). "
+                    f"Retrying capture {attempt + 1}/{max_command_retries}..."
+                )
+                play_wake_ack()
+
+        if not transcript:
+            print("[Mic Worker] No command transcript captured after wake word.")
+            continue
+
+        payload = build_voice_feedback_payload(
+            transcript=transcript,
+            date="today",
             source="microphone-wake-word",
-            context={"wake_word": heard},
-            on_feedback=on_feedback_captured,
+            language=language,
+            context={"wake_word": heard, "retries": max_command_retries},
         )
+        on_feedback_captured(payload)
 
 def main():
     global SERVER_URL, ENGINE
