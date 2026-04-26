@@ -1,0 +1,95 @@
+User: {user_name}
+Target provider: {provider}
+Target model: {model}
+Schedule date: {schedule_date}
+
+Voice request metadata:
+- Transcript: {voice_transcript}
+- Source: {voice_source}
+- Language: {voice_language}
+- Captured at: {voice_captured_at}
+- Context: {voice_context_json}
+
+Sleep assessment:
+- Cluster ID: {cluster_id}
+- Cluster label: {cluster_label}
+- Summary: {summary}
+- Likely risks: {likely_risks}
+- Recommended work style: {recommended_work_style}
+
+Environment:
+- Temperature: {temperature_c:.1f} C
+- Humidity: {humidity_percent:.1f}%
+- Pressure: {pressure_hpa:.1f} hPa
+
+Original schedule:
+{schedule_lines}
+
+EVENT REFERENCE TABLE (use these exact objects for calendar_operations):
+For each original event, here is its complete data that MUST be used in calendar_operations entries:
+{event_reference_table}
+
+Constraints:
+- Preserve fixed events: {preserve_fixed_events}
+- Avoid medical claims: {avoid_medical_claims}
+- Maximum meaningful changes: {max_schedule_changes}
+- Output language: {preferred_output_language}
+- Do not extend beyond the original latest end time.
+- Do not overlap events.
+- Keep every original event exactly once in the final schedule.
+
+Voice payload JSON (authoritative user intent):
+{voice_payload_json}
+
+CRITICAL TIME BOUNDARY:
+The latest end time in the original schedule is IMMUTABLE.
+Any event in optimized_schedule MUST end at or before this time.
+You are NOT ALLOWED to extend the schedule day beyond its original boundary.
+
+Return one JSON object only. The JSON must contain:
+- date
+- daily_summary
+- adjustment_principles
+- calendar_operations
+- optimized_schedule
+
+CRITICAL INSTRUCTION FOR calendar_operations:
+1. You MUST create EXACTLY ONE calendar_operations entry for EACH original event
+2. The calendar_operations array MUST have {num_events} items (same as original schedule count)
+3. Process events IN ORDER - first operation corresponds to Event #1, second to Event #2, etc.
+4. For EVERY entry, copy the exact event object from the EVENT REFERENCE TABLE above
+5. For no_update entries:
+	- "target": copy exact object from EVENT REFERENCE TABLE
+	- "updated": copy the SAME exact object (identical to target)
+	- "reason": explanation why no change is needed
+6. For move entries:
+	- "target": copy exact object from EVENT REFERENCE TABLE
+	- "updated": COPY from EVENT REFERENCE TABLE, but ONLY change "start" and "end" times
+	- "reason": explanation why you're moving it
+7. For update_description entries:
+	- "target": copy exact object from EVENT REFERENCE TABLE
+	- "updated": COPY from EVENT REFERENCE TABLE, but ONLY change "description" field
+	- "reason": explanation why you're updating description
+8. MISTAKES TO AVOID - target and updated MUST be complete JSON objects:
+	- WRONG: "target": "event_id" (string - WRONG)
+	- WRONG: "target": null (null - WRONG)
+	- WRONG: "target": {{"title": "..."}} (incomplete - WRONG)
+	- CORRECT: "target": {{"event_id": null, "title": "Morning Meeting", "start": "09:00", "end": "10:00", "description": "..."}} (complete and correct)
+9. Use the EVENT REFERENCE TABLE above as a template - simply copy the JSON objects and modify only the necessary fields
+
+CRITICAL INSTRUCTION FOR optimized_schedule:
+1. Each item in optimized_schedule MUST have these exact fields:
+	- event_id, title, start, end, description, intensity, movable
+2. STRICT TIME BOUNDARY RULE:
+	- Calculate the latest end time from the original schedule (the maximum end time across all events)
+	- NO EVENT in optimized_schedule may end AFTER this time
+	- If the original schedule ends at 15:00, you MUST arrange all events to fit within 15:00
+	- You CANNOT move events to extend the day beyond 15:00
+3. Arrange events chronologically (sorted by start time)
+4. Do NOT overlap any events
+5. Include ALL original events exactly once (by title match)
+6. Respect fixed events (movable=false) - they MUST keep their original times unchanged
+7. When moving movable events:
+	- Prioritize explicit transcript intent first, then sleep-based optimization
+	- Keep edits minimal if transcript asks for a small change
+8. Validate: optimized_schedule end times MUST satisfy: max(all end times) <= original schedule's latest end time

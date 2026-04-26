@@ -874,7 +874,7 @@ def calendar_worker(
     log(thread_name, "stopped")
 
 
-def listen_daily_analysis(host: str, port: int, sleep_report_queue: queue.Queue, calendar_name: str):
+def listen_daily_analysis(host: str, port: int, calendar_ops_queue: queue.Queue, sleep_report_queue: queue.Queue, calendar_name: str):
     def on_report(sleep_data: dict[str, Any]):
         try:
             sleep_report_queue.put(dict(sleep_data), timeout=2)
@@ -882,8 +882,13 @@ def listen_daily_analysis(host: str, port: int, sleep_report_queue: queue.Queue,
         except queue.Full:
             log("listener", "sleep report queue is full; report dropped")
 
-    def on_voice(voice_text: str) -> str:
-        log("listener-voice", f"Processing voice command: {voice_text}")
+    def on_voice(voice_input: Any) -> str:
+        voice_payload = voice_input if isinstance(voice_input, dict) else build_voice_feedback_payload(transcript=str(voice_input or ""))
+        transcript = str(voice_payload.get("transcript") or "").strip()
+        if not transcript:
+            raise RuntimeError("Voice transcript is empty")
+
+        log("listener-voice", f"Processing voice command: {transcript}")
         date_text = datetime.datetime.now().date().isoformat()
         
         try:
@@ -942,10 +947,16 @@ def listen_daily_analysis(host: str, port: int, sleep_report_queue: queue.Queue,
                     preferred_output_language="English",
                 ),
             )
-            
-            response_text = generate_voice_response(voice_text, llm_input)
-            log("listener-voice", "Voice command handled successfully")
-            return response_text
+            try:
+                recommendation = generate_voice_response(voice_payload, llm_input)
+                calendar_ops_queue.put(recommendation, timeout=2)
+                response_text = recommendation.adjustment_principles[0] if recommendation.adjustment_principles else "I have processed your command, but I don't have a specific recommendation to share."
+                
+                log("listener-voice", "Voice command handled successfully")
+                return response_text
+            except RuntimeError as llm_error:
+                log("listener-voice", f"LLM error while processing voice command: {llm_error}")
+                return "Sorry, I had trouble understanding your command. Please try again."
         except Exception as exc:
             log("listener-voice", f"Failed: {exc}")
             raise
@@ -974,7 +985,7 @@ def start_pipeline(host: str = "0.0.0.0", port: int = 5888):
         threading.Thread(
             target=listen_daily_analysis,
             name="listener-thread",
-            args=(host, port, sleep_report_queue, calendar_name),
+            args=(host, port, calendar_ops_queue, sleep_report_queue, calendar_name),
             daemon=True,
         ),
         threading.Thread(

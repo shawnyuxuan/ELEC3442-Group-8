@@ -4,6 +4,7 @@ import pyttsx3
 import argparse
 import sys
 import os
+from src.speech_to_text import build_voice_feedback_payload, submit_voice_feedback
 
 def check_microphone():
     """Ensure a microphone is available for SpeechRecognition."""
@@ -42,15 +43,14 @@ def listen_and_recognize(recognizer, mic, language="en-US"):
 
 def send_to_server(text, server_url):
     print(f"Sending text to server: {server_url}")
-    payload = {"text": text}
     try:
-        response = requests.post(server_url, json=payload, timeout=20)
-        if response.status_code == 200:
-            data = response.json()
-            return data.get("response", "Error: No response key in JSON.")
-        else:
-            print(f"Server error: {response.status_code} - {response.text}")
-            return None
+        payload = build_voice_feedback_payload(
+            transcript=text,
+            source="voice-client",
+            language="en-US",
+        )
+        data = submit_voice_feedback(payload=payload, feedback_url=server_url, timeout=20)
+        return data.get("response", "Error: No response key in JSON.")
     except requests.exceptions.RequestException as e:
         print(f"Connection failed: {e}")
         return None

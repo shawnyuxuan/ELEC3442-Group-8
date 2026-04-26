@@ -30,15 +30,21 @@ class SleepReportListener:
 
     def receive_voice_command(self):
         payload = request.get_json(silent=True)
-        if not payload or "text" not in payload:
-            return jsonify({"status": "error", "message": "Missing 'text' in payload"}), 400
+        if not payload:
+            return jsonify({"status": "error", "message": "Missing JSON payload"}), 400
 
-        text = payload["text"]
-        print(f"--- 收到语音 STT: {text} ---")
+        # Backward compatible: allow legacy {"text": "..."} and new structured payload.
+        transcript = str(payload.get("transcript") or payload.get("text") or "").strip()
+        if not transcript:
+            return jsonify({"status": "error", "message": "Missing 'transcript' or 'text' in payload"}), 400
+
+        normalized_payload = dict(payload)
+        normalized_payload["transcript"] = transcript
+        print(f"--- 收到语音 STT: {transcript} ---")
         
         if self.on_voice:
             try:
-                response_text = self.on_voice(text)
+                response_text = self.on_voice(normalized_payload)
                 return jsonify({"status": "success", "response": response_text}), 200
             except Exception as exc:
                 print(f"[listener] failed to process voice command: {exc}")

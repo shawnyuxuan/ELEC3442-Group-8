@@ -4,11 +4,13 @@ import os
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 from openai import APIConnectionError, APIStatusError, OpenAI, OpenAIError
 from src.llm_contract import ScheduleRecommendation
 from src.sensehat_behavior import SenseHatController, get_cluster_profile
+from src.speech_to_text import build_voice_feedback_payload
 
 load_dotenv()
 
@@ -18,6 +20,8 @@ DEFAULT_QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 SYSTEM_TEMPLATE_PATH = PROMPTS_DIR / "system_instruction.txt"
 USER_TEMPLATE_PATH = PROMPTS_DIR / "user_prompt_template.txt"
+VOICE_USER_TEMPLATE_PATH = PROMPTS_DIR / "voice_user_prompt_template.txt"
+VOICE_SYSTEM_TEMPLATE_PATH = PROMPTS_DIR / "voice_system_instruction.txt"
 
 
 # ============================================================================
@@ -141,6 +145,109 @@ def build_user_prompt(llm_input: LLMInput) -> str:
         max_schedule_changes=llm_input.constraints.max_schedule_changes,
         preferred_output_language=llm_input.constraints.preferred_output_language,
     )
+
+
+def normalize_voice_prompt_payload(voice_prompt: str | dict[str, Any], llm_input: LLMInput) -> dict[str, Any]:
+    """Normalize raw voice input into a consistent JSON payload for the LLM."""
+    if isinstance(voice_prompt, dict):
+        transcript = str(
+            voice_prompt.get("transcript")
+            or voice_prompt.get("text")
+            or ""
+        ).strip()
+        if not transcript:
+            raise RuntimeError("voice prompt payload must include non-empty transcript/text")
+
+        payload = build_voice_feedback_payload(
+            transcript=transcript,
+            date=str(voice_prompt.get("date") or llm_input.schedule_date),
+            source=str(voice_prompt.get("source") or "voice-api"),
+            language=str(
+                voice_prompt.get("language")
+                or llm_input.constraints.preferred_output_language
+                or "en-US"
+            ),
+            context=voice_prompt.get("context") if isinstance(voice_prompt.get("context"), dict) else None,
+        )
+
+        # Preserve extra metadata fields supplied by caller.
+        for key, value in voice_prompt.items():
+            if key not in payload:
+                payload[key] = value
+        return payload
+
+    transcript = str(voice_prompt or "").strip()
+    if not transcript:
+        raise RuntimeError("voice_prompt is required")
+
+    return build_voice_feedback_payload(
+        transcript=transcript,
+        date=llm_input.schedule_date,
+        source="voice-api",
+        language=llm_input.constraints.preferred_output_language or "en-US",
+    )
+
+
+def build_voice_user_prompt(
+    llm_input: LLMInput,
+    voice_payload: dict[str, Any],
+) -> str:
+    """Format voice prompt from LLMInput + normalized voice payload using template."""
+    schedule_lines = []
+    for item in llm_input.schedule:
+        movable_label = "movable" if item.movable else "fixed"
+        event_id_str = "null" if item.event_id is None else json.dumps(item.event_id)
+        schedule_lines.append(
+            f"- event_id={event_id_str} | {item.start}-{item.end} | {item.task} "
+            f"| description={item.description} | intensity={item.intensity} | {movable_label}"
+        )
+
+    event_reference_table = []
+    for idx, item in enumerate(llm_input.schedule, 1):
+        event_obj = {
+            "event_id": item.event_id,
+            "title": item.task,
+            "start": item.start,
+            "end": item.end,
+            "description": item.description,
+        }
+        event_reference_table.append(
+            f"Event #{idx}: {json.dumps(event_obj, ensure_ascii=False)}"
+        )
+
+    template = load_template(VOICE_USER_TEMPLATE_PATH)
+    return template.format(
+        schedule_date=llm_input.schedule_date,
+        user_name=llm_input.user_name,
+        provider=llm_input.provider,
+        model=llm_input.model,
+        cluster_id=llm_input.sleep_assessment.cluster_id,
+        cluster_label=llm_input.sleep_assessment.cluster_label,
+        summary=llm_input.sleep_assessment.summary,
+        likely_risks=", ".join(llm_input.sleep_assessment.likely_risks),
+        recommended_work_style=llm_input.sleep_assessment.recommended_work_style,
+        temperature_c=llm_input.environment.temperature_c,
+        humidity_percent=llm_input.environment.humidity_percent,
+        pressure_hpa=llm_input.environment.pressure_hpa,
+        num_events=len(llm_input.schedule),
+        schedule_lines="\n".join(schedule_lines),
+        event_reference_table="\n".join(event_reference_table),
+        preserve_fixed_events=llm_input.constraints.preserve_fixed_events,
+        avoid_medical_claims=llm_input.constraints.avoid_medical_claims,
+        max_schedule_changes=llm_input.constraints.max_schedule_changes,
+        preferred_output_language=llm_input.constraints.preferred_output_language,
+        voice_transcript=str(voice_payload.get("transcript") or ""),
+        voice_source=str(voice_payload.get("source") or "voice-api"),
+        voice_language=str(voice_payload.get("language") or "en-US"),
+        voice_captured_at=str(voice_payload.get("captured_at") or ""),
+        voice_context_json=json.dumps(voice_payload.get("context") or {}, ensure_ascii=False),
+        voice_payload_json=json.dumps(voice_payload, ensure_ascii=False, indent=2),
+    )
+
+
+def build_voice_system_instruction() -> str:
+    """Load voice-specific system instruction from template file."""
+    return load_template(VOICE_SYSTEM_TEMPLATE_PATH)
 
 
 def build_feedback_system_instruction() -> str:
@@ -680,36 +787,47 @@ def call_llm(
         f"LLM API call failed after {max_attempts} attempts: {last_error}"
     ) from last_error
 
-def generate_voice_response(voice_prompt: str, llm_input: LLMInput) -> str:
-    """Takes STT voice input and generates a conversational schedule response using Qwen/LLM."""
-    api_key = resolve_api_key()
-    base_url = os.getenv("QWEN_BASE_URL", DEFAULT_QWEN_BASE_URL).rstrip("/")
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    model_name = getattr(llm_input, "model", None) or DEFAULT_MODEL
-
-    system = "You are a voice assistant managing a user's calendar. Provide clear, concise, and helpful audio-friendly spoken answers about their schedule or sleep data."
+def generate_voice_response(voice_prompt: str | dict[str, Any], llm_input: LLMInput) -> ScheduleRecommendation:
+    """Generate schedule recommendation from normalized voice feedback JSON + context."""
+    voice_payload = normalize_voice_prompt_payload(voice_prompt, llm_input)
+    system_instruction = build_voice_system_instruction()
+    user_prompt = build_voice_user_prompt(llm_input, voice_payload)
     
-    schedule_lines = []
-    for item in llm_input.schedule:
-        schedule_lines.append(f"- {item.start}-{item.end} | {item.task} | {item.description}")
+    llm_response = call_llm(system_instruction, user_prompt, llm_input)
+    
+    # Validate structure
+    try:
+        print("\n[Validation] Checking JSON structure...")
+        validate_json_structure(llm_response)
+        print("[Validation] ✓ JSON structure valid")
         
-    user_context = (
-        f"Sleep State: {llm_input.sleep_assessment.cluster_label}\n"
-        f"Sleep Summary: {llm_input.sleep_assessment.summary}\n"
-        "Today's Schedule:\n" + "\n".join(schedule_lines)
-    )
+        print("[Validation] Checking calendar_operations...")
+        validate_calendar_operations(llm_response["calendar_operations"], llm_input)
+        print(f"[Validation] ✓ calendar_operations valid ({len(llm_response['calendar_operations'])} items)")
+        
+        print("[Validation] Checking optimized_schedule...")
+        validate_optimized_schedule(llm_response["optimized_schedule"], llm_input)
+        print(f"[Validation] ✓ optimized_schedule valid ({len(llm_response['optimized_schedule'])} items)")
+        
+    except RuntimeError as e:
+        print(f"\n[Validation] ✗ FAILED: {e}")
+        print(f"\n[Validation] Problem context:")
+        print(f"[Validation] LLM response was:\n{json.dumps(llm_response, indent=2, ensure_ascii=False)}")
+        raise
+    except Exception as e:
+        # Catch any other errors during validation
+        print(f"\n[Validation] ✗ UNEXPECTED ERROR: {type(e).__name__}: {e}")
+        print(f"\n[Validation] Full traceback:")
+        import traceback
+        traceback.print_exc()
+        print(f"\n[Validation] LLM response was:\n{json.dumps(llm_response, indent=2, ensure_ascii=False)}")
+        raise RuntimeError(f"Validation failed with {type(e).__name__}: {e}") from e
     
-    prompt = f"Given this context:\n{user_context}\n\nUser asked: {voice_prompt}"
+    print("\n[Validation] ✓ All checks passed")
     
-    completion = client.chat.completions.create(
-        model=model_name,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ]
-    )
-    
-    return str(completion.choices[0].message.content).strip()
+    # Convert to ScheduleRecommendation
+    recommendation = ScheduleRecommendation.from_dict(llm_response)
+    return recommendation
 
 # ============================================================================
 # Main Entry Points

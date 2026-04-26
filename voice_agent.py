@@ -7,7 +7,7 @@ import os
 import threading
 import queue
 from flask import Flask, request, jsonify
-from src.speech_to_text import VoiceAssistant
+from src.speech_to_text import VoiceAssistant, submit_voice_feedback
 from dotenv import load_dotenv
 
 load_dotenv()  # Load environment variables from .env file
@@ -98,14 +98,10 @@ def mic_worker_thread(server_url):
         transcript = payload.get("transcript", "")
         print(f"[Mic Worker] Sending payload to {server_url}: {transcript}")
         try:
-            response = requests.post(server_url, json={"text": transcript}, timeout=20)
-            if response.status_code == 200:
-                data = response.json()
-                response_text = data.get("response")
-                if response_text:
-                    tts_queue.put(response_text)
-            else:
-                print(f"[Mic Worker] Server error: {response.status_code} - {response.text}")
+            data = submit_voice_feedback(payload=payload, feedback_url=server_url, timeout=20)
+            response_text = data.get("response")
+            if response_text:
+                tts_queue.put(response_text)
         except requests.exceptions.RequestException as e:
             print(f"[Mic Worker] Connection failed: {e}")
 
