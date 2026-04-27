@@ -203,7 +203,7 @@ def main():
     # Initialize TTS engine
     try:
         ENGINE = pyttsx3.init()
-        ENGINE.setProperty("rate", 150)
+        ENGINE.setProperty("rate", 140)
     except Exception as e:
         print(f"Warning: pyttsx3 initialization failed: {e}. Will fallback to espeak.")
 
