@@ -63,10 +63,16 @@ class SleepReportListener:
         if not date:
             raise ValueError("Missing required field: date")
 
-        core = self._to_float(payload.get("core", 0), "core")
-        deep = self._to_float(payload.get("deep", 0), "deep")
-        rem = self._to_float(payload.get("rem", 0), "rem")
+        core_second = self._to_float(payload.get("core", 0), "core")
+        deep_second = self._to_float(payload.get("deep", 0), "deep")
+        rem_second = self._to_float(payload.get("rem", 0), "rem")
+        
+        core = round(core_second / 3600, 3)
+        deep = round(deep_second / 3600, 3)
+        rem = round(rem_second / 3600,3)
+        
         total = round(core + deep + rem, 2)
+
 
         print(f"--- 收到 {date} 的睡眠报告 ---")
         print(f"浅睡(Core): {core}h")
