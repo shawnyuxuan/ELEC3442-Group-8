@@ -1,7 +1,15 @@
 from src.llm_interaction import ScheduleItem
+import datetime
 
 
 BLACKLIST_KEYWORDS = ("elec", "comp", "meeting", "interview")
+
+
+def _to_local_time(value) -> datetime.datetime | datetime.time:
+    if isinstance(value, datetime.datetime) and value.tzinfo is not None:
+        local_tz = datetime.datetime.now().astimezone().tzinfo
+        return value.astimezone(local_tz)
+    return value
 
 
 def infer_event_intensity(title: str, description: str) -> str:
@@ -16,8 +24,8 @@ def infer_event_movable(title: str, description: str) -> bool:
 def schedule_item_from_calendar_event(event) -> ScheduleItem:
     vevent = event.vobject_instance.vevent
     title = str(vevent.summary.value)
-    start = vevent.dtstart.value.strftime("%H:%M")
-    end = vevent.dtend.value.strftime("%H:%M")
+    start = _to_local_time(vevent.dtstart.value).strftime("%H:%M")
+    end = _to_local_time(vevent.dtend.value).strftime("%H:%M")
     description_prop = getattr(vevent, "description", None)
     description = (
         str(description_prop.value)

@@ -5,6 +5,7 @@ from sklearn.preprocessing import StandardScaler
 import os, sys
 import pandas as pd
 import pickle
+import threading
 
 
 DEFAULT_MODEL_CANDIDATES = [
@@ -325,7 +326,12 @@ class SenseHatController:
                 ]
             case _:
                 pixels = [W] * 64
-        self.led_matrix.display_message(pixels)
+        def show_for_one_minute():
+            self.led_matrix.display_message(pixels)
+            time.sleep(60)
+            if self.sense is not None:
+                self.sense.clear()
+        threading.Thread(target=show_for_one_minute, daemon=True).start()
         return
 
 

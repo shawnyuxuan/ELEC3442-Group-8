@@ -112,6 +112,14 @@ curl -X POST http://127.0.0.1:5888/report \
   -d '{"date":"2026-04-14","core":4.5,"deep":1.3,"rem":1.2}'
 ```
 
+Send a voice feedback payload to trigger a second-pass schedule adjustment:
+
+```bash
+curl -X POST http://127.0.0.1:5889/feedback \
+   -H "Content-Type: application/json" \
+   -d '{"date":"2026-04-14","transcript":"Can you move the deep work block back by one hour?","source":"microphone","language":"en-US"}'
+```
+
 ## Environment Variables
 Create a local `.env` file. Example fields:
 
@@ -136,6 +144,9 @@ The calendar pipeline currently reads:
 - `CALDAV_USERNAME`
 - `CALDAV_PASSWORD`
 - `CALDAV_URL`
+
+Optional feedback-loop variables:
+- `CALENDAR_FEEDBACK_PORT` (default: `5889`)
 
 ## Current Limitations
 - `src/sensehat_behavior.py` still uses mock sleep features for testing.

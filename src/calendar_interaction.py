@@ -9,6 +9,13 @@ load_dotenv()
 
 DEFAULT_CALENDAR_NAME = os.getenv("CALENDAR_NAME", "HKU Schedule")
 
+
+def _to_local_datetime(value):
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        local_tz = datetime.now().astimezone().tzinfo
+        return value.astimezone(local_tz)
+    return value
+
 class CalendarController:
     def __init__(self, calendar_name=DEFAULT_CALENDAR_NAME):
         self.client = self.create_client()
@@ -42,7 +49,12 @@ class CalendarController:
     def _rebuild_datetime_like(self, original_value, hhmm_text):
         parsed_time = datetime.strptime(hhmm_text, "%H:%M").time()
         if isinstance(original_value, datetime):
-            return datetime.combine(original_value.date(), parsed_time, original_value.tzinfo)
+            if original_value.tzinfo is not None:
+                local_tz = datetime.now().astimezone().tzinfo
+                local_date = original_value.astimezone(local_tz).date()
+                local_dt = datetime.combine(local_date, parsed_time, local_tz)
+                return local_dt.astimezone(original_value.tzinfo)
+            return datetime.combine(original_value.date(), parsed_time)
         if isinstance(original_value, date):
             return datetime.combine(original_value, parsed_time)
         raise Exception(f"Unsupported calendar time value: {type(original_value).__name__}")
@@ -90,8 +102,8 @@ class CalendarController:
     def _extract_event_fields(self, event):
         vevent = event.vobject_instance.vevent
         summary = str(vevent.summary.value)
-        dtstart = vevent.dtstart.value
-        dtend = vevent.dtend.value
+        dtstart = _to_local_datetime(vevent.dtstart.value)
+        dtend = _to_local_datetime(vevent.dtend.value)
         description = str(getattr(vevent, "description", None).value) if hasattr(vevent, "description") else ""
         return {
             "title": summary,

@@ -17,6 +17,7 @@ class SleepReportListener:
         self.data_dir = data_dir or os.path.join(os.path.dirname(__file__), "..", "daily_data")
         self.data_file_path = os.path.join(self.data_dir, data_file)
         self.on_report = on_report
+        self.on_voice = None  # New callback for voice processing
 
         os.makedirs(self.data_dir, exist_ok=True)
 
@@ -25,6 +26,31 @@ class SleepReportListener:
 
     def _register_routes(self):
         self.app.add_url_rule("/report", view_func=self.receive_sleep_data, methods=["POST"])
+        self.app.add_url_rule("/voice", view_func=self.receive_voice_command, methods=["POST"])
+
+    def receive_voice_command(self):
+        payload = request.get_json(silent=True)
+        if not payload:
+            return jsonify({"status": "error", "message": "Missing JSON payload"}), 400
+
+        # Backward compatible: allow legacy {"text": "..."} and new structured payload.
+        transcript = str(payload.get("transcript") or payload.get("text") or "").strip()
+        if not transcript:
+            return jsonify({"status": "error", "message": "Missing 'transcript' or 'text' in payload"}), 400
+
+        normalized_payload = dict(payload)
+        normalized_payload["transcript"] = transcript
+        print(f"--- 收到语音 STT: {transcript} ---")
+        
+        if self.on_voice:
+            try:
+                response_text = self.on_voice(normalized_payload)
+                return jsonify({"status": "success", "response": response_text}), 200
+            except Exception as exc:
+                print(f"[listener] failed to process voice command: {exc}")
+                return jsonify({"status": "error", "message": str(exc)}), 500
+        
+        return jsonify({"status": "error", "message": "No voice handler configured"}), 500
 
     def _to_float(self, value, field_name):
         try:
@@ -37,10 +63,16 @@ class SleepReportListener:
         if not date:
             raise ValueError("Missing required field: date")
 
-        core = self._to_float(payload.get("core", 0), "core")
-        deep = self._to_float(payload.get("deep", 0), "deep")
-        rem = self._to_float(payload.get("rem", 0), "rem")
+        core_second = self._to_float(payload.get("core", 0), "core")
+        deep_second = self._to_float(payload.get("deep", 0), "deep")
+        rem_second = self._to_float(payload.get("rem", 0), "rem")
+        
+        core = round(core_second / 3600, 3)
+        deep = round(deep_second / 3600, 3)
+        rem = round(rem_second / 3600,3)
+        
         total = round(core + deep + rem, 2)
+
 
         print(f"--- 收到 {date} 的睡眠报告 ---")
         print(f"浅睡(Core): {core}h")
