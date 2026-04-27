@@ -65,7 +65,7 @@ class VoiceAssistant:
             print("Vosk model loaded.")
         else:
             self.recognizer = sr.Recognizer()
-            self.microphone = sr.Microphone()
+            self.microphone = sr.Microphone(device_index=3) # Remember to specify device index for raspberry pi
             self.language = language
             print("Using online speech recognition with language:", self.language)
             print("--- Calibrating microphone for ambient noise ---")

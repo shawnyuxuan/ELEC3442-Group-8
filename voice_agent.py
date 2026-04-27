@@ -99,12 +99,12 @@ def mic_worker_thread(server_url):
     print("[Mic Worker] Started listening for wake words...")
     wake_words = tuple(token.strip().lower() for token in os.getenv("VOICE_WAKE_WORDS", "hey calendar").split(",") if token.strip())
     
-    is_local_stt = os.getenv("VOICE_STT_LOCAL", "false").lower() == "true"
+    is_local_stt = os.getenv("VOICE_STT_LOCAL", "true").lower() == "false"
     language = os.getenv("VOICE_LANGUAGE", "en-US")
-    model_path = os.getenv("VOICE_MODEL_PATH", os.path.join(os.getcwd(), "vosk-model-small-en-us-0.15"))
-    trigger_seconds = max(1, int(os.getenv("VOICE_TRIGGER_LISTEN_SECONDS", "1")))
+    model_path = os.getenv("VOICE_MODEL_PATH", os.path.join(os.getcwd(), "/home/tamim/Desktop/ELEC3442-Group-8/vosk-model-small-en-us-0.15"))
+    trigger_seconds = max(1, int(os.getenv("VOICE_TRIGGER_LISTEN_SECONDS", "8")))
     command_seconds = max(3, int(os.getenv("VOICE_COMMAND_LISTEN_SECONDS", "12")))
-    timeout_threshold = max(1, int(os.getenv("VOICE_TIMEOUT_THRESHOLD", "5")))
+    timeout_threshold = max(1, int(os.getenv("VOICE_TIMEOUT_THRESHOLD", "8")))
     post_wake_delay_ms = max(0, int(os.getenv("VOICE_POST_WAKE_DELAY_MS", "350")))
     min_command_words = max(1, int(os.getenv("VOICE_MIN_COMMAND_WORDS", "3")))
     max_command_retries = max(0, int(os.getenv("VOICE_COMMAND_MAX_RETRIES", "1")))

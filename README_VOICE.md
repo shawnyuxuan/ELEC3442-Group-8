@@ -69,7 +69,7 @@ With **Pi 1** already running `calendar-agent.py`:
 2. Run the voice agent, pointing it to Pi 1's IP Address (replace `192.168.1.100` with the actual IP of Pi 1).
 
 ```bash
-python3 voice_agent.py --server http://192.168.1.100:5888/voice --port 5890
+python3 voice_agent.py --server http://172.20.10.2:5888/voice --port 5890
 ```
 
 3. The script will automatically listen for your wake word (e.g., `"hey calendar"`).
