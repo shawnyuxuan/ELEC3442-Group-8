@@ -232,7 +232,7 @@ def parse_voice_move_request(transcript: str, fallback_date: str) -> dict | None
     # - move the schedule at 15 to 16
     # - move deep work at 15:00 to 16:30
     match = re.search(
-        r"\bmove\s+(?P<title>.*?)\s*at\s*(?P<from>\d{1,2}(?::\d{2})?)\s+to\s*(?P<to>\d{1,2}(?::\d{2})?)\b",
+        r"\bchange\s+(?P<title>.*?)\s*at\s*(?P<from>\d{1,2}(?::\d{2})?)\s+to\s*(?P<to>\d{1,2}(?::\d{2})?)\b",
         lowered,
     )
     if not match:
